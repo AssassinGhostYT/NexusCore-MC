@@ -157,9 +157,9 @@ impl StartGame {
         // 277: Difficulty
         write_vari32(&mut buf, 1); // Easy
 
-        // 278: WorldSpawn (UBlockPos: Varint32, Varuint32, Varint32)
+        // 278: WorldSpawn (BlockPos: Varint32, Varint32, Varint32)
         write_vari32(&mut buf, self.spawn_position.0);
-        write_varu32(&mut buf, self.spawn_position.1 as u32);
+        write_vari32(&mut buf, self.spawn_position.1);
         write_vari32(&mut buf, self.spawn_position.2);
 
         // 279: AchievementsDisabled
