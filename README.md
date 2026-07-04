@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.jpg" alt="NexusCore-MC Logo" width="600"/>
+<img src="assets/nexuscore.png" alt="NexusCore-MC Logo" width="500"/>
 
 # NexusCore-MC
 
