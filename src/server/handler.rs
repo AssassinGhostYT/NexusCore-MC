@@ -7,9 +7,9 @@ use crate::protocol::packet::*;
 use crate::server::client::ClientState;
 
 // Protocol constants
+#[allow(dead_code)]
 const ID_BIOME_DEFINITION_LIST: u32 = 122;
 const ID_COMPRESSED_BIOME_DEFINITIONS: u32 = 301;
-const ID_CREATIVE_CONTENT: u32 = 145;
 const ID_CLIENT_CACHE_STATUS: u32 = 129;
 const ID_SET_LOCAL_PLAYER_AS_INITIALISED: u32 = 113;
 const ID_SERVER_BOUND_LOADING_SCREEN: u32 = 312;
@@ -64,10 +64,10 @@ pub async fn handle_packet(
                             handle_resource_pack_client_response(addr, &packet.payload, state, cmd_tx).await?;
                         }
                         ID_MOVE_PLAYER => {
-                            handle_move_player(addr, &packet.payload);
+                            handle_move_player(addr, &packet.payload, state, cmd_tx).await?;
                         }
                         ID_PLAYER_AUTH_INPUT => {
-                            handle_player_auth_input(addr, &packet.payload);
+                            handle_player_auth_input(addr, &packet.payload, state, cmd_tx).await?;
                         }
                         ID_REQUEST_CHUNK_RADIUS => {
                             handle_request_chunk_radius(addr, &packet.payload, state, cmd_tx).await?;
@@ -77,6 +77,89 @@ pub async fn handle_packet(
                         }
                         ID_SET_LOCAL_PLAYER_AS_INITIALISED => {
                             log::info!("[{}] Received SetLocalPlayerAsInitialised (ID 113) - PLAYER SPAWN COMPLETED!", addr);
+                            
+                            // 1. Set game mode to Creative (1) so the client shows the "..." creative inventory button
+                            let gametype_pkg = GamePacket {
+                                id: ID_SET_PLAYER_GAME_TYPE,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: SetPlayerGameType { game_type: 1 }.write(),
+                            };
+                            
+                            // 2. Send UpdateAbilities:
+                            // - AbilityInstantBuild (bit 11 = 2048) = lets client open creative inventory
+                            // - AbilityBuild (1) + AbilityMine (2) = normal interaction
+                            // - NO AbilityFlying (512) nor AbilityMayFly (1024) = no levitation
+                            //
+                            // Abilities bitmask: Build|Mine|DoorsAndSwitches|OpenContainers|AttackPlayers|AttackMobs|InstantBuild
+                            //   = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x800 = 0x83F
+                            const ABILITIES: u32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x800;
+                            let abilities_pkg = GamePacket {
+                                id: ID_UPDATE_ABILITIES,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: UpdateAbilities {
+                                    entity_unique_id: 1,
+                                    player_permissions: 2,   // Operator
+                                    command_permissions: 4,  // GameDirectors
+                                    layers: vec![AbilityLayer {
+                                        layer_type: 1,      // AbilityLayerTypeBase
+                                        abilities: ABILITIES,
+                                        values: ABILITIES,  // All enabled abilities are active
+                                        fly_speed: 0.05,
+                                        vertical_fly_speed: 1.0,
+                                        walk_speed: 0.1,
+                                    }],
+                                }.write(),
+                            };
+                            
+                            // 3. Send UpdateAdventureSettings (required alongside UpdateAbilities for creative mode)
+                            let adventure_pkg = GamePacket {
+                                id: ID_UPDATE_ADVENTURE_SETTINGS,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: UpdateAdventureSettings {
+                                    no_pvm: false,
+                                    no_mvp: false,
+                                    immutable_world: false,
+                                    show_name_tags: true,
+                                    auto_jump: true,
+                                }.write(),
+                            };
+                            
+                            // 4. Initialize client inventories with empty slots
+                            let inv_pkg = GamePacket {
+                                id: ID_INVENTORY_CONTENT,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: InventoryContent {
+                                    window_id: 0, // WindowIDInventory
+                                    slots: vec![(0, 0, 0); 36],
+                                }.write(),
+                            };
+                            let armour_pkg = GamePacket {
+                                id: ID_INVENTORY_CONTENT,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: InventoryContent {
+                                    window_id: 120, // WindowIDArmour
+                                    slots: vec![(0, 0, 0); 4],
+                                }.write(),
+                            };
+                            let offhand_pkg = GamePacket {
+                                id: ID_INVENTORY_CONTENT,
+                                sender_subclient: 0,
+                                recipient_subclient: 0,
+                                payload: InventoryContent {
+                                    window_id: 119, // WindowIDOffHand
+                                    slots: vec![(0, 0, 0); 1],
+                                }.write(),
+                            };
+                            
+                            // Send: gametype -> abilities -> adventure settings -> inventories
+                            state.send_packets(addr, cmd_tx, &[gametype_pkg, abilities_pkg, adventure_pkg]).await?;
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            state.send_packets(addr, cmd_tx, &[inv_pkg, armour_pkg, offhand_pkg]).await?;
                         }
                         ID_SERVER_BOUND_LOADING_SCREEN => {
                             let screen_type = if !packet.payload.is_empty() { packet.payload[0] } else { 0 };
@@ -107,7 +190,7 @@ async fn handle_request_network_settings(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(req) = RequestNetworkSettings::read(payload) {
         log::info!(
-            "Received RequestNetworkSettings: Protocol Version = {}",
+            "[PROTOCOLO] Cliente usa protocol_version = {} (nuestro servidor habla 1001 = v1.26.31)",
             req.protocol_version
         );
         
@@ -185,6 +268,9 @@ async fn handle_login(
                             let mut temp_state = ClientState {
                                 compression_enabled: state.compression_enabled,
                                 encryption_state: temp_encryption,
+                                last_chunk_x: None,
+                                last_chunk_z: None,
+                                loaded_chunks: std::collections::HashSet::new(),
                             };
                             temp_state.send_packets(addr, cmd_tx, &[handshake_pkg]).await?;
                             
@@ -274,33 +360,39 @@ async fn handle_resource_pack_client_response(
                 recipient_subclient: 0,
                 payload: ResourcePackStack {
                     must_accept: false,
-                    game_version: "".to_string(),
+                    game_version: "1.26.32".to_string(),
                 }.write(),
             };
             
             state.send_packets(addr, cmd_tx, &[stack_pkg]).await?;
         } else if resp.response_status == 4 {
-            log::info!("Client resource pack loading completed. Sending VoxelShapes and StartGame...");
+            log::info!("Client resource pack loading completed. Sending JigsawStructureData, VoxelShapes, StartGame, and ItemRegistry...");
             
+            let jigsaw_pkg = GamePacket {
+                id: ID_JIGSAW_STRUCTURE_DATA,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: JigsawStructureData::new().write(),
+            };
+
+            let voxel_pkg = GamePacket {
+                id: ID_VOXEL_SHAPES,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: VoxelShapes::new().write(),
+            };
+
             let start_game_payload = StartGame {
                 entity_id: 1,
                 runtime_entity_id: 1,
                 player_gamemode: 1, // Creative
-                player_position: (0.0, -62.0, 0.0),
+                player_position: (0.0, -57.38, 0.0),
                 pitch: 0.0,
                 yaw: 0.0,
                 seed: 12345,
-                spawn_position: (0, -63, 0),
+                spawn_position: (0, -59, 0),
                 level_name: "Flat World".to_string(),
             }.write();
-
-            let voxel_shapes_payload = VoxelShapes::new().write();
-            let voxel_shapes_pkg = GamePacket {
-                id: ID_VOXEL_SHAPES,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: voxel_shapes_payload,
-            };
 
             let start_game_pkg = GamePacket {
                 id: ID_START_GAME,
@@ -308,30 +400,35 @@ async fn handle_resource_pack_client_response(
                 recipient_subclient: 0,
                 payload: start_game_payload,
             };
-            
-            log::info!("Sending VoxelShapes, StartGame, ItemRegistry, and AvailableActorIdentifiers in a single batch...");
-            let item_component_pkg = GamePacket {
+
+            let item_registry_pkg = GamePacket {
                 id: ID_ITEM_REGISTRY,
                 sender_subclient: 0,
                 recipient_subclient: 0,
-                payload: ItemRegistry::new().write()
+                payload: ItemRegistry::new().write(),
             };
-            let actor_id_payload = vec![
-                0x0a, 0x00, 0x09, 0x06, 0x69, 0x64, 0x6c, 0x69, 0x73, 0x74, 0x0a, 0x02,
-                0x08, 0x02, 0x69, 0x64, 0x10, 0x6d, 0x69, 0x6e, 0x65, 0x63, 0x72, 0x61,
-                0x66, 0x74, 0x3a, 0x70, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x00, 0x00
-            ];
-            let actor_id_pkg = GamePacket {
-                id: ID_AVAILABLE_ACTOR_IDENTIFIERS,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: actor_id_payload,
-            };
-            state.send_packets(
-                addr,
-                cmd_tx,
-                &[voxel_shapes_pkg, start_game_pkg, item_component_pkg, actor_id_pkg]
-            ).await?;
+            
+            // === DEBUG: primeros 256 y últimos 256 bytes del StartGame ===
+            {
+                let plen = start_game_pkg.payload.len();
+                let preview: Vec<String> = start_game_pkg.payload[..plen.min(256)]
+                    .iter().map(|b| format!("{:02x}", b)).collect();
+                log::info!("StartGame payload ({} bytes), INICIO:\n{}",
+                    plen,
+                    preview.chunks(16).map(|c| c.join(" ")).collect::<Vec<_>>().join("\n")
+                );
+                if plen > 256 {
+                    let tail_start = plen.saturating_sub(256);
+                    let tail: Vec<String> = start_game_pkg.payload[tail_start..]
+                        .iter().map(|b| format!("{:02x}", b)).collect();
+                    log::info!("StartGame payload ({} bytes), FINAL (últimos 256 bytes):\n{}",
+                        plen,
+                        tail.chunks(16).map(|c| c.join(" ")).collect::<Vec<_>>().join("\n")
+                    );
+                }
+            }
+            // === FIN DEBUG ===
+            state.send_packets(addr, cmd_tx, &[jigsaw_pkg, voxel_pkg, start_game_pkg, item_registry_pkg]).await?;
         }
     } else {
         log::warn!("Failed to parse ResourcePackClientResponse payload");
@@ -339,7 +436,76 @@ async fn handle_resource_pack_client_response(
     Ok(())
 }
 
-fn handle_move_player(addr: SocketAddr, payload: &[u8]) {
+async fn maybe_update_chunks(
+    addr: SocketAddr,
+    pos: (f32, f32, f32),
+    state: &mut ClientState,
+    cmd_tx: &mpsc::Sender<RakNetCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cx = (pos.0 / 16.0).floor() as i32;
+    let cz = (pos.2 / 16.0).floor() as i32;
+
+    let should_update = match (state.last_chunk_x, state.last_chunk_z) {
+        (Some(lx), Some(lz)) => (lx - cx).abs() > 0 || (lz - cz).abs() > 0,
+        _ => true,
+    };
+
+    if should_update {
+        state.last_chunk_x = Some(cx);
+        state.last_chunk_z = Some(cz);
+        log::info!("[{}] Player entered chunk ({}, {}). Sending chunks around and updating publisher...", addr, cx, cz);
+
+        // 1. Send NetworkChunkPublisherUpdate
+        let publisher_payload = NetworkChunkPublisherUpdate {
+            position: (cx * 16, -60, cz * 16),
+            radius: 32, // radius 2 (32 blocks)
+        }.write();
+        let publisher_pkg = GamePacket {
+            id: ID_NETWORK_CHUNK_PUBLISHER_UPDATE,
+            sender_subclient: 0,
+            recipient_subclient: 0,
+            payload: publisher_payload,
+        };
+        state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
+
+        // 2. Send Chunks individually (radius 2 -> 25 chunks)
+        let chunk_payload = make_flat_chunk_payload();
+        for dx in -2..=2 {
+            for dz in -2..=2 {
+                let chunk_x = cx + dx;
+                let chunk_z = cz + dz;
+
+                if state.loaded_chunks.contains(&(chunk_x, chunk_z)) {
+                    continue; // Evita volver a enviar chunks cargados para prevenir el parpadeo
+                }
+                state.loaded_chunks.insert((chunk_x, chunk_z));
+
+                let chunk_payload_written = LevelChunk {
+                    chunk_x,
+                    chunk_z,
+                    sub_chunk_count: 24,
+                    payload: chunk_payload.clone(),
+                }.write();
+                let chunk_pkg = GamePacket {
+                    id: ID_LEVEL_CHUNK,
+                    sender_subclient: 0,
+                    recipient_subclient: 0,
+                    payload: chunk_payload_written,
+                };
+                state.send_packets(addr, cmd_tx, &[chunk_pkg]).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_move_player(
+    addr: SocketAddr,
+    payload: &[u8],
+    state: &mut ClientState,
+    cmd_tx: &mpsc::Sender<RakNetCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mp) = MovePlayer::read(payload) {
         log::info!(
             "[{}] MovePlayer: RuntimeID={}, Position=({:.2}, {:.2}, {:.2}), Pitch={:.2}, Yaw={:.2}",
@@ -351,10 +517,17 @@ fn handle_move_player(addr: SocketAddr, payload: &[u8]) {
             mp.pitch,
             mp.yaw
         );
+        maybe_update_chunks(addr, mp.position, state, cmd_tx).await?;
     }
+    Ok(())
 }
 
-fn handle_player_auth_input(addr: SocketAddr, payload: &[u8]) {
+async fn handle_player_auth_input(
+    addr: SocketAddr,
+    payload: &[u8],
+    state: &mut ClientState,
+    cmd_tx: &mpsc::Sender<RakNetCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pai) = PlayerAuthInput::read(payload) {
         log::info!(
             "[{}] PlayerAuthInput: Position=({:.2}, {:.2}, {:.2}), Pitch={:.2}, Yaw={:.2}, Flags=0x{:X}",
@@ -366,7 +539,9 @@ fn handle_player_auth_input(addr: SocketAddr, payload: &[u8]) {
             pai.yaw,
             pai.input_flags
         );
+        maybe_update_chunks(addr, pai.position, state, cmd_tx).await?;
     }
+    Ok(())
 }
 
 async fn handle_request_chunk_radius(
@@ -404,8 +579,8 @@ async fn handle_request_chunk_radius(
             payload: biome_payload,
         };
         
-        // 3. Send CreativeContent (we send a single byte 0 indicating 0 elements for groups and items)
-        let creative_payload = vec![0x00, 0x00];
+        // 3. Send CreativeContent
+        let creative_payload = CreativeContent::new().write();
         let creative_pkg = GamePacket {
             id: ID_CREATIVE_CONTENT,
             sender_subclient: 0,
@@ -415,7 +590,7 @@ async fn handle_request_chunk_radius(
         
         // 4. Send NetworkChunkPublisherUpdate
         let publisher_payload = NetworkChunkPublisherUpdate {
-            position: (0, 64, 0),
+            position: (0, -60, 0),
             radius: (response_radius as u32) << 4, // 32 blocks
         }.write();
         let publisher_pkg = GamePacket {
@@ -437,7 +612,7 @@ async fn handle_request_chunk_radius(
             recipient_subclient: 0,
             payload: actor_id_payload,
         };
-        
+
         // Send first batch of handshake packets
         state.send_packets(addr, cmd_tx, &[radius_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -451,33 +626,7 @@ async fn handle_request_chunk_radius(
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        state.send_packets(addr, cmd_tx, &[actor_id_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        // Send Chunks individually (radius 2 -> 25 chunks)
-        let chunk_payload = make_flat_chunk_payload();
-        for cx in -2..=2 {
-            for cz in -2..=2 {
-                let chunk_payload_written = LevelChunk {
-                    chunk_x: cx,
-                    chunk_z: cz,
-                    sub_chunk_count: 24,
-                    payload: chunk_payload.clone(),
-                }.write();
-
-                let chunk_pkg = GamePacket {
-                    id: ID_LEVEL_CHUNK,
-                    sender_subclient: 0,
-                    recipient_subclient: 0,
-                    payload: chunk_payload_written,
-                };
-                
-                state.send_packets(addr, cmd_tx, &[chunk_pkg]).await?;
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        }
-
-        // Send PlayStatus(PlayerSpawn = 3) AFTER all chunks are sent
+        // Send PlayStatus(PlayerSpawn = 3) to notify the client that they should spawn
         let spawn_payload = PlayStatus { status: 3 }.write();
         let spawn_pkg = GamePacket {
             id: ID_PLAY_STATUS,
@@ -485,7 +634,9 @@ async fn handle_request_chunk_radius(
             recipient_subclient: 0,
             payload: spawn_payload,
         };
-        state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
+
+        state.send_packets(addr, cmd_tx, &[actor_id_pkg, spawn_pkg]).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     Ok(())
 }

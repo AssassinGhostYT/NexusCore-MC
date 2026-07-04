@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use p384::{SecretKey, PublicKey};
 use p384::ecdsa::{SigningKey, Signature, signature::Signer};
 use p384::elliptic_curve::ecdh::diffie_hellman;
@@ -45,7 +46,7 @@ impl EncryptionState {
         iv[..12].copy_from_slice(&key_bytes[..12]);
         iv[12..16].copy_from_slice(&[0, 0, 0, 2]);
 
-        use p384::elliptic_curve::generic_array::GenericArray;
+        use generic_array::GenericArray;
         let encrypter = Aes256Ctr::new(
             GenericArray::from_slice(&key_bytes),
             GenericArray::from_slice(&iv),
@@ -102,6 +103,7 @@ impl EncryptionState {
     }
 }
 
+
 pub fn parse_client_public_key(pub_key_b64: &str) -> Result<PublicKey, String> {
     let der_bytes = STANDARD.decode(pub_key_b64)
         .or_else(|_| {
@@ -152,6 +154,7 @@ pub fn generate_handshake_jwt(secret_key: &SecretKey, salt: &[u8]) -> Result<Str
     Ok(format!("{}.{}.{}", header_b64, payload_b64, sig_b64))
 }
 
+#[allow(deprecated)]
 pub fn compute_shared_secret(secret_key: &SecretKey, client_public: &PublicKey) -> Vec<u8> {
     let shared_secret = diffie_hellman(
         secret_key.to_nonzero_scalar(),

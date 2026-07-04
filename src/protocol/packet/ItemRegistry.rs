@@ -34,7 +34,7 @@ impl ItemRegistry {
             buf.write_i16::<LittleEndian>(item.runtime_id).unwrap();
             buf.push(0); // ComponentBased
             write_vari32(&mut buf, 0); // Version
-            buf.extend_from_slice(&[0x0a, 0x00, 0x00]); // Empty NBT Compound
+            buf.extend_from_slice(&[0x0a, 0x00, 0x00]); // Empty NBT Compound (3 bytes in Network NBT)
         }
         buf
     }

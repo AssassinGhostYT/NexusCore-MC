@@ -44,9 +44,13 @@ pub mod voxel_shapes;
 pub mod set_player_game_type;
 #[path = "UpdateAbilities.rs"]
 pub mod update_abilities;
+#[path = "BlockPalette.rs"]
+pub mod block_palette;
+#[path = "Creative.rs"]
+pub mod creative;
 
 // Re-export constants and types
-pub use helpers::{read_string, write_string, compress_deflate, decompress_deflate};
+pub use helpers::{read_string, write_string, write_nbt_string, compress_deflate, decompress_deflate};
 pub use batch::{ID_GAME_PACKET, GamePacket, decode_batch, encode_batch};
 pub use request_network_settings::{ID_REQUEST_NETWORK_SETTINGS, RequestNetworkSettings};
 pub use network_settings::{ID_NETWORK_SETTINGS, NetworkSettings};
@@ -68,4 +72,14 @@ pub use network_chunk_publisher_update::{ID_NETWORK_CHUNK_PUBLISHER_UPDATE, Netw
 pub use available_actor_identifiers::{ID_AVAILABLE_ACTOR_IDENTIFIERS, AvailableActorIdentifiers};
 pub use voxel_shapes::{ID_VOXEL_SHAPES, VoxelShapes};
 pub use set_player_game_type::{ID_SET_PLAYER_GAME_TYPE, SetPlayerGameType};
-pub use update_abilities::{ID_UPDATE_ABILITIES, UpdateAbilities};
+pub use update_abilities::{ID_UPDATE_ABILITIES, UpdateAbilities, AbilityLayer};
+#[path = "UpdateAdventureSettings.rs"]
+pub mod update_adventure_settings;
+pub use update_adventure_settings::{ID_UPDATE_ADVENTURE_SETTINGS, UpdateAdventureSettings};
+pub use creative::{ID_CREATIVE_CONTENT, CreativeContent};
+#[path = "InventoryContent.rs"]
+pub mod inventory_content;
+pub use inventory_content::{ID_INVENTORY_CONTENT, InventoryContent};
+#[path = "JigsawStructureData.rs"]
+pub mod jigsaw_structure_data;
+pub use jigsaw_structure_data::{ID_JIGSAW_STRUCTURE_DATA, JigsawStructureData};

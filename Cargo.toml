@@ -20,5 +20,4 @@ sha2 = "0.10"
 aes = "0.8"
 cfb8 = "0.8"
 ctr = "0.9"
-
-
+generic-array = "0.14"

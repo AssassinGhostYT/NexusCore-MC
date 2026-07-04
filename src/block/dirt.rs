@@ -2,22 +2,27 @@ use crate::block::Block;
 use crate::block::nbt::NbtTag;
 use std::collections::HashMap;
 
-pub struct Bedrock {
-    pub infiniburn: bool,
+pub struct Dirt {
+    pub coarse: bool,
 }
 
-impl Bedrock {
-    pub const NAME: &'static str = "minecraft:bedrock";
-    pub const HARDNESS: f32 = -1.0;
-    pub const BLAST_RESISTANCE: f32 = 3600000.0;
-    pub const SOUND_TYPE: &'static str = "stone";
+impl Dirt {
+    pub const NAME_DIRT: &'static str = "minecraft:dirt";
+    pub const NAME_COARSE: &'static str = "minecraft:coarse_dirt";
+    pub const HARDNESS: f32 = 0.5;
+    pub const BLAST_RESISTANCE: f32 = 0.5;
+    pub const SOUND_TYPE: &'static str = "gravel";
     pub const TRANSPARENT: bool = false;
-    pub const MAP_COLOR: u8 = 11;
+    pub const MAP_COLOR: u8 = 2; // 2 CLAY/DIRT
 }
 
-impl Block for Bedrock {
+impl Block for Dirt {
     fn name(&self) -> &'static str {
-        Self::NAME
+        if self.coarse {
+            Self::NAME_COARSE
+        } else {
+            Self::NAME_DIRT
+        }
     }
 
     fn hardness(&self) -> f32 {
@@ -33,12 +38,7 @@ impl Block for Bedrock {
     }
 
     fn encode_block(&self) -> (String, HashMap<String, NbtTag>) {
-        let mut states = HashMap::new();
-        states.insert(
-            "infiniburn_bit".to_string(),
-            NbtTag::Byte(if self.infiniburn { 1 } else { 0 }),
-        );
-        (Self::NAME.to_string(), states)
+        (self.name().to_string(), HashMap::new())
     }
 
     fn is_transparent(&self) -> bool {

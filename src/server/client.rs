@@ -8,6 +8,9 @@ use crate::protocol::packet::{GamePacket, encode_batch};
 pub struct ClientState {
     pub compression_enabled: bool,
     pub encryption_state: Option<protocol::encryption::EncryptionState>,
+    pub last_chunk_x: Option<i32>,
+    pub last_chunk_z: Option<i32>,
+    pub loaded_chunks: std::collections::HashSet<(i32, i32)>,
 }
 
 impl ClientState {
@@ -15,6 +18,9 @@ impl ClientState {
         Self {
             compression_enabled: false,
             encryption_state: None,
+            last_chunk_x: None,
+            last_chunk_z: None,
+            loaded_chunks: std::collections::HashSet::new(),
         }
     }
 

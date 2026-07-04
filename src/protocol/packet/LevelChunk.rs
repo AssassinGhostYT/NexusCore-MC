@@ -1,6 +1,6 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use crate::protocol::varint::{write_varu32, write_vari32};
-use crate::block::{Air, Bedrock};
+use crate::block::{Air, Bedrock, Dirt, Grass, Block};
 
 pub const ID_LEVEL_CHUNK: u32 = 58;
 
@@ -72,9 +72,11 @@ pub fn pack_single_block_storage(runtime_id: u32) -> Vec<u8> {
 pub fn make_flat_chunk_payload() -> Vec<u8> {
     let mut payload = Vec::new();
     
-    // Subchunk 0 (Y = -64..-49) contains Bedrock at the base, and the rest is Air
-    // Local Y = 0 (Y = -64): Bedrock
-    // Local Y = 1..=15 (Y = -63..-49): Air
+    // Subchunk 0 (Y = -64..-49) contains:
+    // Local Y = 0 (Y = -64): Bedrock -> index 1
+    // Local Y = 1..=3 (Y = -63..-61): Dirt -> index 2
+    // Local Y = 4 (Y = -60): Grass -> index 3
+    // Local Y = 5..=15 (Y = -59..-49): Air -> index 0
     let mut sub0_indices = [0u8; 4096];
     for x in 0..16 {
         for z in 0..16 {
@@ -82,6 +84,10 @@ pub fn make_flat_chunk_payload() -> Vec<u8> {
                 let idx = (x << 8) | (z << 4) | y;
                 if y == 0 {
                     sub0_indices[idx] = 1; // Bedrock -> palette index 1
+                } else if y >= 1 && y <= 3 {
+                    sub0_indices[idx] = 2; // Dirt -> palette index 2
+                } else if y == 4 {
+                    sub0_indices[idx] = 3; // Grass -> palette index 3
                 } else {
                     sub0_indices[idx] = 0; // Air -> palette index 0
                 }
@@ -90,10 +96,12 @@ pub fn make_flat_chunk_payload() -> Vec<u8> {
     }
     
     let sub0_palette = vec![
-        Air::RUNTIME_ID,
-        Bedrock::RUNTIME_ID_DEFAULT,
+        Air.runtime_id(),
+        Bedrock { infiniburn: false }.runtime_id(),
+        Dirt { coarse: false }.runtime_id(),
+        Grass.runtime_id(),
     ];
-    let sub0_storage = pack_block_storage(&sub0_indices, 1, &sub0_palette);
+    let sub0_storage = pack_block_storage(&sub0_indices, 2, &sub0_palette);
     
     // Write Subchunk 0
     payload.push(9); // SubChunk Version: 9

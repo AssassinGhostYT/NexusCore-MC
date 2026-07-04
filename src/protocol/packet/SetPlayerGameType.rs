@@ -1,6 +1,6 @@
 use crate::protocol::varint::write_vari32;
 
-pub const ID_SET_PLAYER_GAME_TYPE: u32 = 93;
+pub const ID_SET_PLAYER_GAME_TYPE: u32 = 62;
 
 #[derive(Debug, Clone)]
 pub struct SetPlayerGameType {

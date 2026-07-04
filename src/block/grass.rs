@@ -2,20 +2,18 @@ use crate::block::Block;
 use crate::block::nbt::NbtTag;
 use std::collections::HashMap;
 
-pub struct Bedrock {
-    pub infiniburn: bool,
-}
+pub struct Grass;
 
-impl Bedrock {
-    pub const NAME: &'static str = "minecraft:bedrock";
-    pub const HARDNESS: f32 = -1.0;
-    pub const BLAST_RESISTANCE: f32 = 3600000.0;
-    pub const SOUND_TYPE: &'static str = "stone";
+impl Grass {
+    pub const NAME: &'static str = "minecraft:grass_block";
+    pub const HARDNESS: f32 = 0.6;
+    pub const BLAST_RESISTANCE: f32 = 0.6;
+    pub const SOUND_TYPE: &'static str = "grass";
     pub const TRANSPARENT: bool = false;
-    pub const MAP_COLOR: u8 = 11;
+    pub const MAP_COLOR: u8 = 1;
 }
 
-impl Block for Bedrock {
+impl Block for Grass {
     fn name(&self) -> &'static str {
         Self::NAME
     }
@@ -33,12 +31,7 @@ impl Block for Bedrock {
     }
 
     fn encode_block(&self) -> (String, HashMap<String, NbtTag>) {
-        let mut states = HashMap::new();
-        states.insert(
-            "infiniburn_bit".to_string(),
-            NbtTag::Byte(if self.infiniburn { 1 } else { 0 }),
-        );
-        (Self::NAME.to_string(), states)
+        (Self::NAME.to_string(), HashMap::new())
     }
 
     fn is_transparent(&self) -> bool {

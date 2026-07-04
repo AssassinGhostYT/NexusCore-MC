@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use byteorder::{LittleEndian, WriteBytesExt};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
 use flate2::read::DeflateDecoder;
@@ -16,6 +17,12 @@ pub fn read_string(buf: &mut &[u8]) -> Option<String> {
 
 pub fn write_string(buf: &mut Vec<u8>, s: &str) {
     write_varu32(buf, s.len() as u32);
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Escribe un string en formato NBT de Bedrock: u16 LE fijo como longitud (NO varint).
+pub fn write_nbt_string(buf: &mut Vec<u8>, s: &str) {
+    buf.write_u16::<LittleEndian>(s.len() as u16).unwrap();
     buf.extend_from_slice(s.as_bytes());
 }
 

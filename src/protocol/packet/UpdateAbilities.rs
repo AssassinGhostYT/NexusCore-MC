@@ -8,6 +8,7 @@ pub struct AbilityLayer {
     pub abilities: u32,
     pub values: u32,
     pub fly_speed: f32,
+    pub vertical_fly_speed: f32,
     pub walk_speed: f32,
 }
 
@@ -31,6 +32,7 @@ impl UpdateAbilities {
             buf.write_u32::<LittleEndian>(layer.abilities).unwrap();
             buf.write_u32::<LittleEndian>(layer.values).unwrap();
             buf.write_f32::<LittleEndian>(layer.fly_speed).unwrap();
+            buf.write_f32::<LittleEndian>(layer.vertical_fly_speed).unwrap();
             buf.write_f32::<LittleEndian>(layer.walk_speed).unwrap();
         }
         buf

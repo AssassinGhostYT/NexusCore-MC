@@ -254,6 +254,7 @@ impl RakNetServer {
                                     if let Err(e) = self.socket.send_to(&raw_packet, src).await {
                                         log::error!("Failed to resend packet to {}: {:?}", src, e);
                                     }
+                                    tokio::time::sleep(std::time::Duration::from_micros(50)).await;
                                 }
                             }
                         }
@@ -317,10 +318,10 @@ impl RakNetServer {
         let _client_guid = reader.read_u64::<BigEndian>().unwrap_or(0);
         
         // Prepare pong status string
-        let motd = "§bNexusCore-BE§r Server";
+        let motd = "§bNexusCore-MC§r Server";
         let sub_motd = "A Bedrock Server in Rust";
-        let protocol = "1001"; // Minecraft v1.26.30 protocol version
-        let version = "1.26.30";
+        let protocol = "1001"; // Minecraft v1.26.31 protocol version
+        let version = "1.26.31";
         let players = "0";
         let max_players = "100";
         let gamemode = "Creative";
@@ -623,6 +624,7 @@ impl RakNetServer {
                         frames: vec![frame],
                     };
                     Self::send_frame_set(&self.socket, session, frame_set).await;
+                    tokio::time::sleep(std::time::Duration::from_micros(50)).await;
                 }
             } else {
                 let frame_set = session.create_frame_set(payload, reliability);
