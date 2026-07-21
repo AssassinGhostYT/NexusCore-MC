@@ -54,7 +54,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(address: SocketAddr, guid: u64, mtu: u16) -> Self {
-        log::info!("Creating new RakNet session for {} (GUID: {}, MTU: {})", address, guid, mtu);
+        log::debug!("Creating new RakNet session for {} (GUID: {}, MTU: {})", address, guid, mtu);
         Session {
             address,
             guid,
@@ -159,7 +159,8 @@ impl RakNetServer {
         let local_addr = socket.local_addr()?;
         let port = local_addr.port();
         let guid = rand::random::<u64>();
-        log::info!("RakNet server listening on {} with Server GUID {}", local_addr, guid);
+        log::info!("RakNet server listening on {}", local_addr);
+        log::debug!("Server GUID: {}", guid);
         
         let (cmd_tx, cmd_rx) = mpsc::channel(1024);
         
@@ -301,7 +302,7 @@ impl RakNetServer {
     }
 
     async fn handle_unconnected_ping(&self, src: SocketAddr, packet: &[u8]) {
-        log::info!("Received Unconnected Ping from {}", src);
+        log::debug!("Received Unconnected Ping from {}", src);
         let mut reader = packet;
         let _id = reader.read_u8().unwrap();
         let ping_id = match reader.read_u64::<BigEndian>() {
@@ -318,7 +319,7 @@ impl RakNetServer {
         let _client_guid = reader.read_u64::<BigEndian>().unwrap_or(0);
         
         // Prepare pong status string
-        let motd = "§bNexusCore-MC§r Server";
+        let motd = "NexusCore";
         let sub_motd = "A Bedrock Server in Rust";
         let protocol = "1001"; // Minecraft v1.26.31 protocol version
         let version = "1.26.31";
@@ -345,12 +346,12 @@ impl RakNetServer {
         if let Err(e) = self.socket.send_to(&reply, src).await {
             log::error!("Failed to send Unconnected Pong to {}: {:?}", src, e);
         } else {
-            log::info!("Sent Unconnected Pong to {}", src);
+            log::debug!("Sent Unconnected Pong to {}", src);
         }
     }
 
     async fn handle_open_connection_request_1(&self, src: SocketAddr, packet: &[u8]) {
-        log::info!("Received Open Connection Request 1 from {}", src);
+        log::debug!("Received Open Connection Request 1 from {}", src);
         let mut reader = packet;
         let _id = reader.read_u8().unwrap();
         
@@ -362,12 +363,12 @@ impl RakNetServer {
         reader = &reader[16..];
         
         let protocol_version = reader.read_u8().unwrap_or(0);
-        log::info!("Client protocol version in Request 1: {}", protocol_version);
+        log::debug!("Client protocol version in Request 1: {}", protocol_version);
         
         // Deduce MTU from packet size (with UDP and IP headers offset, but packet.len() is the standard RakNet MTU size)
         let client_mtu = packet.len() as u16;
         let accepted_mtu = client_mtu.clamp(576, 1492);
-        log::info!("Negotiating MTU: client sent packet size {}, accepted MTU {}", client_mtu, accepted_mtu);
+        log::debug!("Negotiating MTU: client sent packet size {}, accepted MTU {}", client_mtu, accepted_mtu);
         
         // Generate stateless deterministic cookie based on peer port and server GUID
         let mut cookie = (src.port() as u32) ^ (self.guid as u32);
@@ -375,7 +376,7 @@ impl RakNetServer {
         if first_byte == 4 || first_byte == 6 {
             cookie ^= 0x0100_0000;
         }
-        log::info!("Generated security cookie 0x{:08X} for {}", cookie, src);
+        log::debug!("Generated security cookie 0x{:08X} for {}", cookie, src);
 
         let mut reply = Vec::new();
         reply.push(ID_OPEN_CONNECTION_REPLY_1);
@@ -388,12 +389,12 @@ impl RakNetServer {
         if let Err(e) = self.socket.send_to(&reply, src).await {
             log::error!("Failed to send Open Connection Reply 1 to {}: {:?}", src, e);
         } else {
-            log::info!("Sent Open Connection Reply 1 to {}", src);
+            log::debug!("Sent Open Connection Reply 1 to {}", src);
         }
     }
 
     async fn handle_open_connection_request_2(&mut self, src: SocketAddr, packet: &[u8]) {
-        log::info!("Received Open Connection Request 2 from {}", src);
+        log::debug!("Received Open Connection Request 2 from {}", src);
         let mut reader = packet;
         let _id = reader.read_u8().unwrap();
         
@@ -416,7 +417,7 @@ impl RakNetServer {
                 let cookie_val = reader.read_u32::<BigEndian>().unwrap();
                 let client_proof = reader.read_u8().unwrap();
                 cookie = Some(cookie_val);
-                log::info!("Decoded cookie 0x{:08X} and client proof byte {} from {}", cookie_val, client_proof, src);
+                log::debug!("Decoded cookie 0x{:08X} and client proof byte {} from {}", cookie_val, client_proof, src);
             }
         }
         
@@ -442,7 +443,7 @@ impl RakNetServer {
                 return;
             }
         };
-        log::info!("Server address sent in Request 2: {}", server_addr);
+        log::debug!("Server address sent in Request 2: {}", server_addr);
         
         let mtu = match reader.read_u16::<BigEndian>() {
             Ok(v) => v,
@@ -459,7 +460,7 @@ impl RakNetServer {
                 return;
             }
         };
-        log::info!("MTU in Request 2: {}, Client GUID: {}", mtu, client_guid);
+        log::debug!("MTU in Request 2: {}, Client GUID: {}", mtu, client_guid);
 
         // Send reply 2
         let mut reply = Vec::new();
@@ -472,7 +473,7 @@ impl RakNetServer {
 
         match self.socket.send_to(&reply, src).await {
             Ok(_) => {
-                log::info!("Sent Open Connection Reply 2 to {}", src);
+                log::debug!("Sent Open Connection Reply 2 to {}", src);
                 // Create a session for this client
                 let session = Session::new(src, client_guid, mtu);
                 self.sessions.insert(src, session);
@@ -503,7 +504,7 @@ impl RakNetServer {
                 let _client_guid = reader.read_u64::<BigEndian>().map_err(|_| "Failed to read client GUID")?;
                 let send_time = reader.read_u64::<BigEndian>().map_err(|_| "Failed to read send time")?;
                 
-                log::info!("Connection Request from client GUID: {} on {}", _client_guid, session.address);
+                log::debug!("Connection Request from client GUID: {} on {}", _client_guid, session.address);
                 
                 // Build connection request accepted packet
                 let mut accept_payload = Vec::new();
@@ -530,7 +531,7 @@ impl RakNetServer {
             }
             ID_NEW_INCOMING_CONNECTION => {
                 session.state = SessionState::Connected;
-                log::info!("RakNet session successfully established for {}", session.address);
+                log::debug!("RakNet session successfully established for {}", session.address);
                 let _ = event_tx.send(RakNetEvent::Connected(session.address, session.guid)).await;
             }
             ID_CONNECTED_PING => {
@@ -553,7 +554,7 @@ impl RakNetServer {
             }
             ID_DISCONNECT => {
                 session.state = SessionState::Disconnected;
-                log::info!("Client requested disconnect: {}", session.address);
+                log::debug!("Client requested disconnect: {}", session.address);
                 let _ = event_tx.send(RakNetEvent::Disconnected(session.address)).await;
             }
             _ => {
@@ -639,7 +640,7 @@ impl RakNetServer {
         for (addr, session) in self.sessions.iter_mut() {
             // Check session timeout
             if session.last_activity.elapsed() > Duration::from_secs(10) {
-                log::info!("Session timed out for client {}", addr);
+                log::debug!("Session timed out for client {}", addr);
                 session.state = SessionState::Disconnected;
                 disconnected.push(*addr);
                 continue;

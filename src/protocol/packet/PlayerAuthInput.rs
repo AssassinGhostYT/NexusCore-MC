@@ -1,42 +1,68 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use crate::protocol::varint::read_varu32;
+use crate::protocol::error::PResult;
+use crate::protocol::varint::{read_varu64, read_vari32};
+use super::move_player::MovePlayerPosition;
 
-pub const ID_PLAYER_AUTH_INPUT: u32 = 144;
-
-#[derive(Debug, Clone)]
 pub struct PlayerAuthInput {
     pub pitch: f32,
     pub yaw: f32,
-    pub position: (f32, f32, f32),
-    pub move_vector: (f32, f32),
-    pub head_yaw: f32,
-    pub input_flags: u64,
-    pub input_mode: u32,
-    pub play_mode: u32,
+    pub position: MovePlayerPosition,
+    pub tick: u64,
 }
 
 impl PlayerAuthInput {
-    pub fn read(mut payload: &[u8]) -> Option<Self> {
-        let pitch = payload.read_f32::<LittleEndian>().ok()?;
-        let yaw = payload.read_f32::<LittleEndian>().ok()?;
-        let pos_x = payload.read_f32::<LittleEndian>().ok()?;
-        let pos_y = payload.read_f32::<LittleEndian>().ok()?;
-        let pos_z = payload.read_f32::<LittleEndian>().ok()?;
-        let move_x = payload.read_f32::<LittleEndian>().ok()?;
-        let move_z = payload.read_f32::<LittleEndian>().ok()?;
-        let head_yaw = payload.read_f32::<LittleEndian>().ok()?;
-        let input_flags = crate::protocol::varint::read_varu64(&mut payload)?;
-        let input_mode = read_varu32(&mut payload)?;
-        let play_mode = read_varu32(&mut payload)?;
-        Some(PlayerAuthInput {
-            pitch,
-            yaw,
-            position: (pos_x, pos_y, pos_z),
-            move_vector: (move_x, move_z),
-            head_yaw,
-            input_flags,
-            input_mode,
-            play_mode,
-        })
+    pub fn read(payload: &[u8]) -> PResult<Self> {
+        let mut buf = &payload[..];
+        let pitch = buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.pitch", source: e }
+        })?;
+        let yaw = buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.yaw", source: e }
+        })?;
+        let x = buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.x", source: e }
+        })?;
+        let y = buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.y", source: e }
+        })?;
+        let z = buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.z", source: e }
+        })?;
+        // Skip movement fields (head_x, head_y, head_z)
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.head_x", source: e }
+        })?;
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.head_y", source: e }
+        })?;
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.head_z", source: e }
+        })?;
+        let _input_data = read_varu64(&mut buf).ok_or_else(|| {
+            crate::protocol::error::PacketError::VarintOverflow { kind: "PlayerAuthInput.input_data" }
+        })?;
+        let _input_mode = buf.read_u8().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.input_mode", source: e }
+        })?;
+        let _play_mode = buf.read_u32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.play_mode", source: e }
+        })?;
+        let _new_interaction_model = read_vari32(&mut buf).ok_or_else(|| {
+            crate::protocol::error::PacketError::VarintOverflow { kind: "PlayerAuthInput.new_interaction_model" }
+        })?;
+        let tick = read_varu64(&mut buf).ok_or_else(|| {
+            crate::protocol::error::PacketError::VarintOverflow { kind: "PlayerAuthInput.tick" }
+        })?;
+        // Skip input_auth (3 floats)
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.input_auth_0", source: e }
+        })?;
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.input_auth_1", source: e }
+        })?;
+        buf.read_f32::<LittleEndian>().map_err(|e| {
+            crate::protocol::error::PacketError::Io { context: "PlayerAuthInput.input_auth_2", source: e }
+        })?;
+        Ok(Self { pitch, yaw, position: MovePlayerPosition { x, y, z }, tick })
     }
 }

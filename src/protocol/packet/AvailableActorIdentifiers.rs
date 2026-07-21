@@ -1,12 +1,13 @@
-pub const ID_AVAILABLE_ACTOR_IDENTIFIERS: u32 = 119;
+// AvailableActorIdentifiers — ID 119
+// Envia un NBT compuesto vacío (cliente usa biomas por defecto)
 
-#[derive(Debug, Clone)]
-pub struct AvailableActorIdentifiers {
-    pub serialized_entity_identifiers: Vec<u8>,
-}
+use crate::protocol::error::PResult;
+
+pub struct AvailableActorIdentifiers;
 
 impl AvailableActorIdentifiers {
-    pub fn write(&self) -> Vec<u8> {
-        self.serialized_entity_identifiers.clone()
+    pub fn write() -> PResult<Vec<u8>> {
+        // NBT vacío: solo byte 0x00 (TAG_Compound con 0 elementos)
+        Ok(vec![0x00])
     }
 }

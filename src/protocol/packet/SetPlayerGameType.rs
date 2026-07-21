@@ -1,16 +1,14 @@
-use crate::protocol::varint::write_vari32;
+use byteorder::{LittleEndian, WriteBytesExt};
+use crate::protocol::error::PResult;
 
-pub const ID_SET_PLAYER_GAME_TYPE: u32 = 62;
-
-#[derive(Debug, Clone)]
 pub struct SetPlayerGameType {
     pub game_type: i32,
 }
 
 impl SetPlayerGameType {
-    pub fn write(&self) -> Vec<u8> {
+    pub fn write(&self) -> PResult<Vec<u8>> {
         let mut buf = Vec::new();
-        write_vari32(&mut buf, self.game_type);
-        buf
+        buf.write_i32::<LittleEndian>(self.game_type).unwrap();
+        Ok(buf)
     }
 }

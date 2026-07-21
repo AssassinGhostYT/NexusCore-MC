@@ -1,15 +1,17 @@
 use byteorder::{BigEndian, ReadBytesExt};
+use crate::protocol::error::PResult;
 
-pub const ID_REQUEST_NETWORK_SETTINGS: u32 = 193; // 0xc1
-
-#[derive(Debug, Clone)]
 pub struct RequestNetworkSettings {
     pub protocol_version: i32,
 }
 
 impl RequestNetworkSettings {
-    pub fn read(mut payload: &[u8]) -> Option<Self> {
-        let protocol_version = payload.read_i32::<BigEndian>().ok()?;
-        Some(RequestNetworkSettings { protocol_version })
+    pub fn read(payload: &[u8]) -> PResult<Self> {
+        let mut buf = &payload[..];
+        let protocol_version = buf.read_i32::<BigEndian>().map_err(|e| {
+            log::error!("read RequestNetworkSettings.protocol_version failed: {}", e);
+            crate::protocol::error::PacketError::Io { context: "RequestNetworkSettings.protocol_version", source: e }
+        })?;
+        Ok(Self { protocol_version })
     }
 }

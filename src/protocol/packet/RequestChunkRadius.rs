@@ -1,15 +1,17 @@
+use crate::protocol::error::PResult;
 use crate::protocol::varint::read_vari32;
 
-pub const ID_REQUEST_CHUNK_RADIUS: u32 = 69;
-
-#[derive(Debug, Clone)]
 pub struct RequestChunkRadius {
-    pub radius: i32,
+    pub chunk_radius: i32,
 }
 
 impl RequestChunkRadius {
-    pub fn read(mut payload: &[u8]) -> Option<Self> {
-        let radius = read_vari32(&mut payload)?;
-        Some(RequestChunkRadius { radius })
+    pub fn read(payload: &[u8]) -> PResult<Self> {
+        let mut buf = &payload[..];
+        let chunk_radius = read_vari32(&mut buf).ok_or_else(|| {
+            log::error!("read RequestChunkRadius.chunk_radius varint failed");
+            crate::protocol::error::PacketError::VarintOverflow { kind: "RequestChunkRadius.chunk_radius" }
+        })? as i32;
+        Ok(Self { chunk_radius })
     }
 }

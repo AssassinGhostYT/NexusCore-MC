@@ -1,41 +1,61 @@
-use byteorder::{LittleEndian, WriteBytesExt};
+// ItemRegistry — ID 162
+// Sent by the server to send the client a list of available items.
+// Required for mobile/Xbox Live clients to prevent crashes.
+
+use crate::protocol::error::PResult;
 use crate::protocol::varint::{write_varu32, write_vari32};
-use super::helpers::write_string;
-use serde::{Deserialize, Serialize};
+use crate::macros::helpers;
+use byteorder::{LittleEndian, WriteBytesExt};
+use serde::Deserialize;
+use std::fs::File;
+use std::io::BufReader;
 
-pub const ID_ITEM_REGISTRY: u32 = 162;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ItemEntry {
-    pub name: String,
-    pub runtime_id: i16,
+#[derive(Deserialize)]
+struct ItemJson {
+    name: String,
+    runtime_id: i16,
 }
 
-#[derive(Debug, Clone)]
 pub struct ItemRegistry {
-    pub items: Vec<ItemEntry>,
+    data: Vec<u8>,
 }
 
 impl ItemRegistry {
-    pub fn new() -> Self {
-        let json_str = include_str!("../../../items.json");
-        let items: Vec<ItemEntry> = serde_json::from_str(json_str).unwrap_or_else(|e| {
-            log::error!("Failed to parse items.json: {:?}", e);
-            Vec::new()
-        });
-        ItemRegistry { items }
+    pub fn load_from_json() -> Self {
+        let mut data = Vec::new();
+        let file = File::open("items.json");
+        if let Ok(f) = file {
+            let reader = BufReader::new(f);
+            let items: Vec<ItemJson> = serde_json::from_reader(reader).unwrap_or_default();
+            log::info!("Loaded {} items from items.json for ItemRegistry", items.len());
+            
+            // 1. Write item count as varuint32
+            write_varu32(&mut data, items.len() as u32);
+            
+            // 2. Write each item
+            for item in items {
+                // Name as string
+                helpers::write_string(&mut data, &item.name);
+                // Runtime ID as i16 LE
+                data.write_i16::<LittleEndian>(item.runtime_id).unwrap();
+                // ComponentBased as bool (false)
+                data.push(0);
+                // Version as vari32 (0)
+                write_vari32(&mut data, 0);
+                // Data as empty NBT compound tag [0x0a, 0x00, 0x00]
+                data.push(0x0a);
+                data.push(0x00);
+                data.push(0x00);
+            }
+        } else {
+            log::error!("Failed to open items.json! Sending empty ItemRegistry.");
+            write_varu32(&mut data, 0);
+        }
+        
+        Self { data }
     }
 
-    pub fn write(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        write_varu32(&mut buf, self.items.len() as u32);
-        for item in &self.items {
-            write_string(&mut buf, &item.name);
-            buf.write_i16::<LittleEndian>(item.runtime_id).unwrap();
-            buf.push(0); // ComponentBased
-            write_vari32(&mut buf, 0); // Version
-            buf.extend_from_slice(&[0x0a, 0x00, 0x00]); // Empty NBT Compound (3 bytes in Network NBT)
-        }
-        buf
+    pub fn write(&self) -> PResult<Vec<u8>> {
+        Ok(self.data.clone())
     }
 }

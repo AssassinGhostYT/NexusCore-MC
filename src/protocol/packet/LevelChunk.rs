@@ -1,10 +1,8 @@
+use crate::protocol::error::PResult;
+use crate::protocol::varint::{write_vari32, write_varu32};
+use crate::macros::helpers;
 use byteorder::{LittleEndian, WriteBytesExt};
-use crate::protocol::varint::{write_varu32, write_vari32};
-use crate::block::{Air, Bedrock, Dirt, Grass, Block};
 
-pub const ID_LEVEL_CHUNK: u32 = 58;
-
-#[derive(Debug, Clone)]
 pub struct LevelChunk {
     pub chunk_x: i32,
     pub chunk_z: i32,
@@ -13,117 +11,100 @@ pub struct LevelChunk {
 }
 
 impl LevelChunk {
-    pub fn write(&self) -> Vec<u8> {
+    pub fn write(&self) -> PResult<Vec<u8>> {
         let mut buf = Vec::new();
         write_vari32(&mut buf, self.chunk_x);
         write_vari32(&mut buf, self.chunk_z);
-        write_vari32(&mut buf, 0); // Dimension: Overworld (0)
+        write_vari32(&mut buf, 0); // dimension_id = 0
         write_varu32(&mut buf, self.sub_chunk_count);
-        buf.push(0); // Cache enabled: false
-        
-        write_varu32(&mut buf, self.payload.len() as u32);
-        buf.extend_from_slice(&self.payload);
-        
-        buf
+        buf.push(0); // cache_enabled = false
+        helpers::write_bytes(&mut buf, &self.payload);
+        Ok(buf)
     }
 }
 
-pub fn pack_block_storage(block_indices: &[u8; 4096], bits_per_block: u8, palette: &[u32]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    
-    // Storage version: (bits_per_block << 1) | 1 (1 indicates network serialization)
-    let version_byte = (bits_per_block << 1) | 1;
-    buf.push(version_byte);
-    
-    let blocks_per_word = 32 / bits_per_block as usize;
-    let words_count = (4096 + blocks_per_word - 1) / blocks_per_word;
-    
-    // Write packed words
-    for w in 0..words_count {
-        let mut word: u32 = 0;
-        for b in 0..blocks_per_word {
-            let idx = w * blocks_per_word + b;
-            if idx < 4096 {
-                let palette_idx = block_indices[idx] as u32;
-                word |= (palette_idx & ((1 << bits_per_block) - 1)) << (b * bits_per_block as usize);
-            }
-        }
-        buf.write_u32::<LittleEndian>(word).unwrap();
-    }
-    
-    // Write palette size: i32 VarInt
-    write_vari32(&mut buf, palette.len() as i32);
-    
-    // Write palette elements: i32 VarInt runtime ID for each block
-    for &runtime_id in palette {
-        write_vari32(&mut buf, runtime_id as i32);
-    }
-    
-    buf
-}
-
-pub fn pack_single_block_storage(runtime_id: u32) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.push(1); // Palette header: bits_per_block = 0 (1)
-    write_vari32(&mut buf, runtime_id as i32); // Runtime ID (zigzag VarInt)
-    buf
-}
-
+/// Generate flat world chunk data: Bedrock/Dirt/Grass at y=-64 (subchunk index 0)
+/// and air for the rest of the 23 subchunks.
 pub fn make_flat_chunk_payload() -> Vec<u8> {
-    let mut payload = Vec::new();
+    let mut data = Vec::new();
     
-    // Subchunk 0 (Y = -64..-49) contains:
-    // Local Y = 0 (Y = -64): Bedrock -> index 1
-    // Local Y = 1..=3 (Y = -63..-61): Dirt -> index 2
-    // Local Y = 4 (Y = -60): Grass -> index 3
-    // Local Y = 5..=15 (Y = -59..-49): Air -> index 0
-    let mut sub0_indices = [0u8; 4096];
+    let air_id: i32 = -604749536;
+    let bedrock_id: i32 = -173245189;
+    let dirt_id: i32 = -2108756090;
+    let grass_id: i32 = -567203660;
+
+    log::info!("Chunk runtime hashes: air={}, bedrock={}, dirt={}, grass={}", 
+               air_id, bedrock_id, dirt_id, grass_id);
+    
+    // --- Sub-chunk 0 (y = -4, index 0): contains ground ---
+    data.push(9); // version = 9 (Limitless)
+    data.push(2); // storage_count = 2 layers
+    data.push(252); // sub_chunk_y = -4 (0xfc)
+    
+    // Layer 0: Bedrock + Dirt + Grass + Air
+    data.push(5); // bits_per_block = 2, flag = 1 (5)
+    
+    let mut words = vec![0u32; 256];
     for x in 0..16 {
         for z in 0..16 {
             for y in 0..16 {
-                let idx = (x << 8) | (z << 4) | y;
-                if y == 0 {
-                    sub0_indices[idx] = 1; // Bedrock -> palette index 1
-                } else if y >= 1 && y <= 3 {
-                    sub0_indices[idx] = 2; // Dirt -> palette index 2
-                } else if y == 4 {
-                    sub0_indices[idx] = 3; // Grass -> palette index 3
+                let index = ((x as usize) << 8) | ((z as usize) << 4) | (y as usize);
+                let palette_idx = if y == 0 {
+                    0 // Bedrock
+                } else if y == 1 || y == 2 {
+                    1 // Dirt
+                } else if y == 3 {
+                    2 // Grass
                 } else {
-                    sub0_indices[idx] = 0; // Air -> palette index 0
-                }
+                    3 // Air
+                };
+                
+                let word_idx = index / 16;
+                let bit_offset = (index % 16) * 2;
+                words[word_idx] |= (palette_idx as u32) << bit_offset;
             }
         }
     }
     
-    let sub0_palette = vec![
-        Air.runtime_id(),
-        Bedrock { infiniburn: false }.runtime_id(),
-        Dirt { coarse: false }.runtime_id(),
-        Grass.runtime_id(),
-    ];
-    let sub0_storage = pack_block_storage(&sub0_indices, 2, &sub0_palette);
-    
-    // Write Subchunk 0
-    payload.push(9); // SubChunk Version: 9
-    payload.push(1); // Storage layers count: 1
-    payload.push(252); // Y index: -4
-    payload.extend_from_slice(&sub0_storage);
-    
-    // Subchunks 1..23 (Y = -48..319) are all Air (0 storage layers count means empty, defaults to Air)
-    for i in 1..24 {
-        payload.push(9); // SubChunk Version: 9
-        payload.push(0); // Storage layers count: 0
-        payload.push((i as i8 - 4) as u8); // Y index
+    for w in words {
+        data.write_u32::<LittleEndian>(w).unwrap();
     }
     
-    // 24 biome storages (plains biome ID 1)
-    let plains_biome_storage = pack_single_block_storage(1);
+    write_vari32(&mut data, 4); // palette count = 4
+    write_vari32(&mut data, bedrock_id as i32);
+    write_vari32(&mut data, dirt_id as i32);
+    write_vari32(&mut data, grass_id as i32);
+    write_vari32(&mut data, air_id as i32);
+    
+    // Layer 1: all air (single valued palette)
+    data.push(1);
+    write_vari32(&mut data, air_id as i32);
+    
+    // --- Sub-chunks 1..23 (y = -3..19): all air ---
+    for y_idx in 1..24 {
+        let y_val = (y_idx as i8 - 4) as u8;
+        data.push(9);
+        data.push(2);
+        data.push(y_val);
+        
+        // Layer 0: all air
+        data.push(1);
+        write_vari32(&mut data, air_id as i32);
+        
+        // Layer 1: all air
+        data.push(1);
+        write_vari32(&mut data, air_id as i32);
+    }
+    
+    // --- Biomes for all 24 subchunks ---
     for _ in 0..24 {
-        payload.extend_from_slice(&plains_biome_storage);
+        // Biome: all Plains (ID 0, single valued palette)
+        data.push(1);
+        write_vari32(&mut data, 0); // Plains biome (0)
     }
     
-    payload.push(0); // Border blocks count: 0
-    payload.push(0); // Block entities count: 0
+    // Border blocks count (0)
+    data.push(0);
     
-    payload
+    data
 }

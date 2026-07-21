@@ -2,6 +2,11 @@
 name = "NexusCore-MC"
 version = "0.1.0"
 edition = "2021"
+default-run = "NexusCore-MC"
+
+[features]
+default = []
+python = ["pyo3"]
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
@@ -21,3 +26,6 @@ aes = "0.8"
 cfb8 = "0.8"
 ctr = "0.9"
 generic-array = "0.14"
+toml = "0.8"
+crc32fast = "1.4"
+pyo3 = { version = "0.20", features = ["auto-initialize"], optional = true }

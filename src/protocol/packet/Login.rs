@@ -1,185 +1,232 @@
+// Login packet (ID 1) - v1001 format
+// Format: [i32 BE protocol_version][varint conn_req_len][conn_req_bytes]
+// conn_req: [i32 LE auth_len][auth_json][i32 LE client_data_len][client_data_jwt]
+//
+// Xbox Live auth JSON structure (AuthenticationType=0, Online):
+//   { "AuthenticationType": 0, "Token": "<JWT>", "Certificate": null }
+//   The JWT payload contains: { "cpk": "<client_pub_key_b64>", "xid": "...", "xname": "..." }
+//   The JWT header (x5u) contains the public key of whoever signed this JWT.
+//
+// Offline auth JSON structure (AuthenticationType=2):
+//   { "AuthenticationType": 2, "Token": "<JWT>", "Certificate": null }
+//   Same JWT but not signed by Xbox — payload has username/uuid.
+//
+// Old chain format (some older clients):
+//   { "chain": ["<JWT1>", "<JWT2>", "<JWT3>"] }
+//   Last JWT has extraData.displayName, extraData.XUID, identityPublicKey
+
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use crate::protocol::error::{PacketError, PResult};
+use crate::protocol::varint::read_varu32;
 
-pub const ID_LOGIN: u32 = 1;
-
-#[derive(Debug, Clone)]
 pub struct Login {
-    #[allow(dead_code)]
     pub protocol_version: i32,
     pub username: String,
     pub uuid: String,
-    pub xuid: String,
-    pub game_version: String,
-    pub device_os: i32,
+    /// The client's ECDH public key (base64, for encryption handshake).
+    /// Present for both Xbox (Online) and Offline clients.
+    /// - Xbox: comes from "cpk" field in the Token JWT payload
+    /// - Chain: comes from "identityPublicKey" in the last chain JWT payload
     pub identity_public_key: String,
+    /// Raw AuthenticationType value: 0=Online(Xbox), 1=Guest, 2=Offline
+    pub auth_type: u8,
+    pub client_data: Option<Vec<u8>>,
 }
 
-fn decode_jwt_payload(jwt: &str) -> Option<serde_json::Value> {
+/// Decode a JWT payload (base64url middle segment) into JSON
+fn parse_jwt_payload(jwt: &str) -> Option<serde_json::Value> {
     let parts: Vec<&str> = jwt.split('.').collect();
-    if parts.len() < 2 {
-        return None;
+    if parts.len() < 2 { return None; }
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1]
+    ).ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+/// Extract username, UUID, identity_public_key from JWT payload claims.
+/// For Xbox (Token format): cpk = client public key, xname = username, xid = xuid
+/// For Chain format: extraData.displayName, extraData.XUID, identityPublicKey
+fn extract_from_claims(claims: &serde_json::Value) -> (String, String, String) {
+    let mut username = String::new();
+    let mut uuid = String::new();
+    let mut pub_key = String::new();
+
+    // Chain format: extraData object
+    if let Some(extra) = claims.get("extraData") {
+        if let Some(name) = extra.get("displayName").and_then(|v| v.as_str()) {
+            if !name.is_empty() { username = name.to_string(); }
+        }
+        if let Some(xuid) = extra.get("XUID").and_then(|v| v.as_str()) {
+            if !xuid.is_empty() { uuid = xuid.to_string(); }
+        }
+        // In chain format, extraData also has "identity" field (player UUID)
+        if uuid.is_empty() {
+            if let Some(id) = extra.get("identity").and_then(|v| v.as_str()) {
+                uuid = id.to_string();
+            }
+        }
     }
-    
-    let payload_b64 = parts[1];
-    
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    
-    let decoded_bytes = URL_SAFE_NO_PAD.decode(payload_b64.as_bytes()).ok()?;
-    let json_val: serde_json::Value = serde_json::from_slice(&decoded_bytes).ok()?;
-    Some(json_val)
+
+    // Token format (Xbox/Offline): xname, xid, cpk
+    if username.is_empty() {
+        if let Some(n) = claims.get("xname").and_then(|v| v.as_str()) {
+            username = n.to_string();
+        }
+    }
+    if uuid.is_empty() {
+        if let Some(id) = claims.get("xid").and_then(|v| v.as_str())
+            .or_else(|| claims.get("sub").and_then(|v| v.as_str())) {
+            uuid = id.to_string();
+        }
+    }
+
+    // Public key: "cpk" (Token format) OR "identityPublicKey" (chain format)
+    if let Some(k) = claims.get("cpk").and_then(|v| v.as_str()) {
+        if !k.is_empty() { pub_key = k.to_string(); }
+    }
+    if pub_key.is_empty() {
+        if let Some(k) = claims.get("identityPublicKey").and_then(|v| v.as_str()) {
+            if !k.is_empty() { pub_key = k.to_string(); }
+        }
+    }
+
+    (username, uuid, pub_key)
 }
 
 impl Login {
-    pub fn read(mut payload: &[u8]) -> Option<Self> {
-        log::info!("Login::read: payload length = {}", payload.len());
-        log::info!("Login::read: first 32 bytes = {:02x?}", &payload[..std::cmp::min(payload.len(), 32)]);
-        let protocol_version = payload.read_i32::<BigEndian>().ok()?;
-        log::info!("Login::read: protocol_version = {}", protocol_version);
-        
-        let request_len = match crate::protocol::varint::read_varu32(&mut payload) {
-            Some(len) => len as usize,
-            None => {
-                log::warn!("Login::read: Failed to read request_len VarInt");
-                return None;
-            }
-        };
-        log::info!("Login::read: request_len = {}", request_len);
-        if payload.len() < request_len {
-            log::warn!("Login::read: payload too small for request_len {}", request_len);
-            return None;
+    pub fn read(payload: &[u8]) -> PResult<Self> {
+        let mut buf = &payload[..];
+
+        // 1. Protocol version: i32 big-endian
+        let protocol_version = buf.read_i32::<BigEndian>().map_err(|e| {
+            PacketError::Io { context: "Login.protocol_version", source: e }
+        })?;
+        log::debug!("Login: protocol_version={}", protocol_version);
+
+        // 2. connection_request: varint-prefixed byte blob
+        let conn_req_len = read_varu32(&mut buf)
+            .ok_or_else(|| PacketError::VarintOverflow { kind: "Login.connection_request_length" })? as usize;
+        log::debug!("Login: connection_request length={}", conn_req_len);
+
+        if conn_req_len > buf.len() {
+            return Err(PacketError::Underflow {
+                field: "Login.connection_request",
+                need: conn_req_len,
+                have: buf.len(),
+            });
         }
-        let mut request_buf = &payload[..request_len];
-        
-        let chain_len = match request_buf.read_u32::<LittleEndian>() {
-            Ok(len) => len as usize,
-            Err(_) => {
-                log::warn!("Login::read: Failed to read chain_len");
-                return None;
-            }
-        };
-        log::info!("Login::read: chain_len = {}", chain_len);
-        if request_buf.len() < chain_len {
-            log::warn!("Login::read: request_buf too small for chain_len {}", chain_len);
-            return None;
+        let conn_req = &buf[..conn_req_len];
+        let mut cr = &conn_req[..];
+
+        // 3. Inside connection_request: auth_data (i32 LE length prefix)
+        let auth_len = cr.read_i32::<LittleEndian>().map_err(|e| {
+            PacketError::Io { context: "Login.auth_data_length", source: e }
+        })? as usize;
+        log::debug!("Login: auth_data length={}", auth_len);
+
+        if auth_len > cr.len() {
+            return Err(PacketError::Underflow {
+                field: "Login.auth_data",
+                need: auth_len,
+                have: cr.len(),
+            });
         }
-        let chain_bytes = &request_buf[..chain_len];
-        request_buf = &request_buf[chain_len..];
-        
-        let chain_str = match std::str::from_utf8(chain_bytes) {
-            Ok(s) => s.to_string(),
-            Err(e) => {
-                log::warn!("Login::read: chain_bytes is not valid UTF-8: {:?}", e);
-                return None;
-            }
-        };
-        log::info!("Login::read: chain_str (len={}) = '{}'", chain_str.len(), chain_str);
-        
-        let chain_json: serde_json::Value = match serde_json::from_str(&chain_str) {
-            Ok(json) => json,
-            Err(e) => {
-                log::warn!("Login::read: Failed to parse chain_str as JSON: {:?}", e);
-                return None;
-            }
-        };
-        
-        let chain_arr = if let Some(arr) = chain_json.get("chain").and_then(|v| v.as_array()) {
-            arr.clone()
-        } else if let Some(token) = chain_json.get("Token").and_then(|v| v.as_str()) {
-            vec![serde_json::Value::String(token.to_string())]
-        } else {
-            log::warn!("Login::read: Missing or invalid 'chain' or 'Token' in JSON");
-            return None;
-        };
-        log::info!("Login::read: Found {} chain/token elements", chain_arr.len());
-        
+        let auth_json_bytes = &cr[..auth_len];
+        cr = &cr[auth_len..];
+
+        // 4. Inside connection_request: client_data (i32 LE length prefix)
+        let client_data_len = cr.read_i32::<LittleEndian>().map_err(|e| {
+            PacketError::Io { context: "Login.client_data_length", source: e }
+        })? as usize;
+        log::debug!("Login: client_data length={}", client_data_len);
+
+        if client_data_len > cr.len() {
+            return Err(PacketError::Underflow {
+                field: "Login.client_data",
+                need: client_data_len,
+                have: cr.len(),
+            });
+        }
+        let client_data_raw = &cr[..client_data_len];
+
+        // 5. Parse auth_data JSON
+        let auth_json: serde_json::Value = serde_json::from_slice(auth_json_bytes).map_err(|e| {
+            log::error!("Login auth_data JSON parse failed: {}", e);
+            PacketError::Json { context: "Login.auth_data", source: e }
+        })?;
+
+        let auth_json_keys: Vec<&str> = auth_json.as_object()
+            .map(|o| o.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        log::debug!("Login: auth_json keys: {:?}", auth_json_keys);
+
         let mut username = String::new();
         let mut uuid = String::new();
-        let mut xuid = String::new();
         let mut identity_public_key = String::new();
-        
-        for (i, jwt_val) in chain_arr.iter().enumerate() {
-            let jwt_str = match jwt_val.as_str() {
-                Some(s) => s,
-                None => {
-                    log::warn!("Login::read: chain[{}] is not a string", i);
-                    continue;
-                }
-            };
-            if let Some(payload_json) = decode_jwt_payload(jwt_str) {
-                if let Some(pub_key) = payload_json.get("identityPublicKey").or_else(|| payload_json.get("cpk")).and_then(|v| v.as_str()) {
-                    identity_public_key = pub_key.to_string();
-                }
-                if let Some(extra_data) = payload_json.get("extraData") {
-                    if let Some(display_name) = extra_data.get("displayName").and_then(|v| v.as_str()) {
-                        username = display_name.to_string();
-                    }
-                    if let Some(identity) = extra_data.get("identity").and_then(|v| v.as_str()) {
-                        uuid = identity.to_string();
-                    }
-                    if let Some(xuid_val) = extra_data.get("XUID").and_then(|v| v.as_str()) {
-                        xuid = xuid_val.to_string();
-                    }
-                } else {
-                    if let Some(xname) = payload_json.get("xname").and_then(|v| v.as_str()) {
-                        username = xname.to_string();
-                    }
-                    if let Some(sub) = payload_json.get("sub").and_then(|v| v.as_str()) {
-                        uuid = sub.to_string();
-                    }
-                    if let Some(xid_val) = payload_json.get("xid").and_then(|v| v.as_str()) {
-                        xuid = xid_val.to_string();
+        let mut auth_type: u8 = 2; // default = offline
+
+        // ── Path A: Modern Token format (Xbox Live & Offline) ────────────────
+        // { "AuthenticationType": 0|1|2, "Token": "<JWT>", "Certificate": null }
+        if let Some(at_val) = auth_json.get("AuthenticationType") {
+            auth_type = at_val.as_u64().unwrap_or(2) as u8;
+            log::debug!("Login: AuthenticationType={} (0=Online,1=Guest,2=Offline)", auth_type);
+
+            if let Some(token) = auth_json.get("Token").and_then(|v| v.as_str()) {
+                if !token.is_empty() {
+                    log::debug!("Login: parsing Token JWT (len={})", token.len());
+                    if let Some(claims) = parse_jwt_payload(token) {
+                        let claims_keys: Vec<&str> = claims.as_object()
+                            .map(|o| o.keys().map(|k| k.as_str()).collect())
+                            .unwrap_or_default();
+                        log::debug!("Login: Token JWT payload keys: {:?}", claims_keys);
+                        let (u, x, k) = extract_from_claims(&claims);
+                        if !u.is_empty() { username = u; }
+                        if !x.is_empty() { uuid = x; }
+                        if !k.is_empty() { identity_public_key = k; }
+                    } else {
+                        log::warn!("Login: failed to decode Token JWT payload");
                     }
                 }
-            } else {
-                log::warn!("Login::read: Failed to decode JWT payload for chain[{}]", i);
             }
         }
-        log::info!("Login::read: Parsed credentials: username='{}', uuid='{}', xuid='{}', identity_public_key='{}'", username, uuid, xuid, identity_public_key);
-        
-        let client_data_len = match request_buf.read_u32::<LittleEndian>() {
-            Ok(len) => len as usize,
-            Err(_) => {
-                log::warn!("Login::read: Failed to read client_data_len");
-                return None;
+        // ── Path B: Old chain format ──────────────────────────────────────────
+        // { "chain": ["<JWT1>", "<JWT2>", "<JWT3>"] }
+        // The chain JWTs are signed by Xbox — last one has extraData with username/XUID
+        // and identityPublicKey = client's public key.
+        else if let Some(chain) = auth_json.get("chain").and_then(|v| v.as_array()) {
+            log::debug!("Login: chain format with {} JWTs", chain.len());
+            for (i, jwt_val) in chain.iter().enumerate() {
+                if let Some(jwt_str) = jwt_val.as_str() {
+                    if let Some(claims) = parse_jwt_payload(jwt_str) {
+                        let (u, x, k) = extract_from_claims(&claims);
+                        if !u.is_empty() && username.is_empty() { username = u; uuid = x; }
+                        if !k.is_empty() { identity_public_key = k; }
+                        log::debug!("Login: chain[{}] username='{}' has_key={}", i, username, !identity_public_key.is_empty());
+                    }
+                }
             }
+            // Chain with 3 JWTs = Xbox Live (signed chain), 1 JWT = offline
+            auth_type = if chain.len() >= 3 { 0 } else { 2 };
+        }
+
+        if username.is_empty() { username = "Unknown".to_string(); }
+
+        let auth_mode = match auth_type {
+            0 => "Xbox Live",
+            1 => "Guest",
+            _ => "Offline",
         };
-        log::info!("Login::read: client_data_len = {}", client_data_len);
-        if request_buf.len() < client_data_len {
-            log::warn!("Login::read: request_buf too small for client_data_len {}", client_data_len);
-            return None;
-        }
-        let client_data_bytes = &request_buf[..client_data_len];
-        let client_data_str = match std::str::from_utf8(client_data_bytes) {
-            Ok(s) => s.to_string(),
-            Err(e) => {
-                log::warn!("Login::read: client_data_bytes is not valid UTF-8: {:?}", e);
-                return None;
-            }
-        };
-        
-        let mut game_version = String::new();
-        let mut device_os = 0;
-        
-        if let Some(client_data_json) = decode_jwt_payload(&client_data_str) {
-            if let Some(gv) = client_data_json.get("GameVersion").and_then(|v| v.as_str()) {
-                game_version = gv.to_string();
-            }
-            if let Some(dos) = client_data_json.get("DeviceOS").and_then(|v| v.as_i64()) {
-                device_os = dos as i32;
-            }
-        } else {
-            log::warn!("Login::read: Failed to decode client_data_str JWT payload");
-        }
-        
-        Some(Login {
+        log::info!("[Login] Username: '{}' ({})", username, auth_mode);
+
+        let client_data_opt = if client_data_raw.is_empty() { None } else { Some(client_data_raw.to_vec()) };
+
+        Ok(Self {
             protocol_version,
             username,
             uuid,
-            xuid,
-            game_version,
-            device_os,
             identity_public_key,
+            auth_type,
+            client_data: client_data_opt,
         })
     }
 }

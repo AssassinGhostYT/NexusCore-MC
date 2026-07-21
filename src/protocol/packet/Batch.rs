@@ -1,9 +1,11 @@
+use flate2::read::{ZlibDecoder, DeflateDecoder};
+use flate2::write::DeflateEncoder;
+use flate2::Compression;
+use std::io::{Read, Write};
+
+use crate::protocol::error::{PacketError, PResult};
 use crate::protocol::varint::{read_varu32, write_varu32};
-use super::helpers::{compress_deflate, decompress_deflate};
 
-pub const ID_GAME_PACKET: u8 = 0xfe;
-
-#[derive(Debug, Clone)]
 pub struct GamePacket {
     pub id: u32,
     pub sender_subclient: u8,
@@ -11,114 +13,154 @@ pub struct GamePacket {
     pub payload: Vec<u8>,
 }
 
-/// Decodes a game packet batch.
-/// If `compressed` is true, it will decompress the batch first.
-pub fn decode_batch(mut data: &[u8], compressed: bool) -> std::io::Result<Vec<GamePacket>> {
+const ID_GAME_PACKET: u8 = 0xFE;
+const COMPRESSION_ZLIB: u8 = 0x00;
+const COMPRESSION_SNAPPY: u8 = 0x01;
+const COMPRESSION_NONE: u8 = 0xFF;
+
+/// Decode a batch of game packets.
+/// The `data` includes the 0xFE header byte.
+/// If `compressed` is true, data after 0xFE has a compression method byte.
+pub fn decode_batch(data: &[u8], compressed: bool) -> PResult<Vec<GamePacket>> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Verify game packet header (0xfe)
+
     if data[0] != ID_GAME_PACKET {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Invalid game packet header: 0x{:02x}", data[0]),
-        ));
+        return Err(PacketError::Format {
+            packet: "batch".into(),
+            detail: format!("invalid game packet header: 0x{:02x}", data[0]),
+        });
     }
-    data = &data[1..];
 
     let batch_data = if compressed {
-        if data.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Compressed batch missing compression algorithm byte",
-            ));
+        if data.len() < 2 {
+            return Err(PacketError::Format {
+                packet: "batch".into(),
+                detail: "compressed batch too short".into(),
+            });
         }
-        let algorithm = data[0];
-        if algorithm == 0xff {
-            data[1..].to_vec()
-        } else if algorithm != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Unsupported compression algorithm: {}", algorithm),
-            ));
-        } else {
-            decompress_deflate(&data[1..])?
+        let algorithm = data[1];
+        match algorithm {
+            COMPRESSION_NONE => data[2..].to_vec(),
+            COMPRESSION_ZLIB => {
+                let compressed_data = &data[2..];
+                // Try raw deflate first (client v1001 uses raw deflate, not zlib)
+                let mut decoder = DeflateDecoder::new(compressed_data);
+                let mut decompressed = Vec::new();
+                match decoder.read_to_end(&mut decompressed) {
+                    Ok(_) => decompressed,
+                    Err(_) => {
+                        // Fallback to zlib
+                        let mut decoder = ZlibDecoder::new(compressed_data);
+                        let mut decompressed = Vec::new();
+                        decoder.read_to_end(&mut decompressed).map_err(|e| {
+                            PacketError::Io { context: "batch zlib decompression", source: e }
+                        })?;
+                        decompressed
+                    }
+                }
+            }
+            other => {
+                return Err(PacketError::Format {
+                    packet: "batch".into(),
+                    detail: format!("unknown compression method: 0x{:02x}", other),
+                });
+            }
         }
     } else {
-        data.to_vec()
+        data[1..].to_vec()
     };
 
+    // Parse sub-packets: [varint: length] [varint: header] [body...]
     let mut reader = &batch_data[..];
     let mut packets = Vec::new();
 
     while !reader.is_empty() {
-        // Each packet inside the batch is prefixed by its length as a VarInt
-        let length = read_varu32(&mut reader).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to read packet length VarInt")
+        let packet_length = read_varu32(&mut reader).ok_or_else(|| {
+            PacketError::Format { packet: "batch".into(), detail: "failed to read packet length".into() }
         })? as usize;
 
-        if reader.len() < length {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Incomplete packet inside batch",
-            ));
+        if reader.len() < packet_length {
+            return Err(PacketError::Format {
+                packet: "batch".into(),
+                detail: format!("packet length {} exceeds remaining bytes {}", packet_length, reader.len()),
+            });
         }
 
-        let mut packet_data = &reader[..length];
-        reader = &reader[length..];
+        let packet_data = &reader[..packet_length];
+        reader = &reader[packet_length..];
 
-        // Parse packet header: VarInt containing packet ID and subclient flags
-        let header = read_varu32(&mut packet_data).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to read packet header VarInt")
+        let mut packet_reader = &packet_data[..];
+        let header = read_varu32(&mut packet_reader).ok_or_else(|| {
+            PacketError::Format { packet: "batch".into(), detail: "failed to read packet header".into() }
         })?;
 
-        let id = header & 0x3ff;
+        // packet_id (10 bits) | sender_sub_client (2 bits) | target_sub_client (2 bits)
+        let id = header & 0x3FF;
         let sender_subclient = ((header >> 10) & 0x03) as u8;
         let recipient_subclient = ((header >> 12) & 0x03) as u8;
 
-        packets.push(GamePacket {
-            id,
-            sender_subclient,
-            recipient_subclient,
-            payload: packet_data.to_vec(),
-        });
+        let payload = packet_reader.to_vec();
+
+        packets.push(GamePacket { id, sender_subclient, recipient_subclient, payload });
     }
 
     Ok(packets)
 }
 
-/// Encodes a list of game packets into a batch.
-/// If `compressed` is true, the batch will be compressed.
-pub fn encode_batch(packets: &[GamePacket], compressed: bool) -> std::io::Result<Vec<u8>> {
-    let mut batch_data = Vec::new();
+pub fn encode_batch(packets: &[GamePacket], compression_enabled: bool) -> Vec<u8> {
+    let mut inner = Vec::new();
 
     for packet in packets {
-        let mut packet_buf = Vec::new();
-
-        // Encode header VarInt
-        let header = (packet.id & 0x3ff)
+        let header = (packet.id & 0x3FF)
             | ((packet.sender_subclient as u32 & 0x03) << 10)
             | ((packet.recipient_subclient as u32 & 0x03) << 12);
-        
+
+        let mut packet_buf = Vec::new();
         write_varu32(&mut packet_buf, header);
         packet_buf.extend_from_slice(&packet.payload);
 
-        // Prefix length as VarInt
-        write_varu32(&mut batch_data, packet_buf.len() as u32);
-        batch_data.extend_from_slice(&packet_buf);
+        write_varu32(&mut inner, packet_buf.len() as u32);
+        inner.extend_from_slice(&packet_buf);
     }
 
     let mut result = Vec::new();
-    result.push(ID_GAME_PACKET);
+    result.push(ID_GAME_PACKET); // 0xFE
 
-    if compressed {
-        let compressed_data = compress_deflate(&batch_data)?;
-        result.push(0x00); // Compression algorithm byte: Zlib/Deflate (0x00)
-        result.extend_from_slice(&compressed_data);
+    if compression_enabled {
+        const COMPRESSION_THRESHOLD: usize = 256;
+        if inner.len() >= COMPRESSION_THRESHOLD {
+            // Compress with zlib deflate, algorithm = 0x00
+            result.push(COMPRESSION_ZLIB);
+            match compress_deflate(&inner) {
+                Ok(compressed) => result.extend_from_slice(&compressed),
+                Err(_) => {
+                    // Fallback: send uncompressed if compression fails
+                    result[1] = COMPRESSION_NONE;
+                    result.extend_from_slice(&inner);
+                }
+            }
+        } else {
+            // Below threshold: no compression, algorithm = 0xFF
+            result.push(COMPRESSION_NONE);
+            result.extend_from_slice(&inner);
+        }
     } else {
-        result.extend_from_slice(&batch_data);
+        result.extend_from_slice(&inner);
     }
 
-    Ok(result)
+    result
+}
+
+
+pub fn compress_deflate(data: &[u8]) -> PResult<Vec<u8>> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).map_err(|e| {
+        PacketError::Io { context: "deflate compression", source: e }
+    })?;
+    encoder.finish().map_err(|e| {
+        PacketError::Io { context: "deflate compression finish", source: e }
+    })
 }

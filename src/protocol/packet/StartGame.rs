@@ -1,228 +1,197 @@
 use byteorder::{LittleEndian, WriteBytesExt};
-use crate::protocol::varint::{write_varu32, write_vari32, write_vari64, write_varu64};
-use super::helpers::write_string;
-use crate::protocol::packet::block_palette::get_block_palette;
+use crate::protocol::error::PResult;
+use crate::protocol::varint::{write_vari64, write_varu64, write_vari32};
+use crate::macros::helpers;
+use crate::protocol::packet::block_palette::write_block_palette;
+use crate::protocol::packet::level_settings::LevelSettings;
+use crate::protocol::packet::synced_player_movement_settings::SyncedPlayerMovementSettings;
+use crate::protocol::packet::network_permissions::NetworkPermissions;
 
-pub const ID_START_GAME: u32 = 11;
-
-#[derive(Debug, Clone)]
+/// StartGame packet (ID = 0x0B / 11).
+///
+/// Sent by the server immediately after ResourcePackStack is acknowledged (status=4).
+/// Field order follows the v1001 wire format exactly.
 pub struct StartGame {
+    // ── Entity IDs ────────────────────────────────────────────────────────────
+    /// Unique entity ID of the local player (zigzag vari64).
     pub entity_id: i64,
+    /// Runtime entity ID of the local player (varu64).
     pub runtime_entity_id: u64,
+
+    // ── Player state ─────────────────────────────────────────────────────────
+    /// Game mode for this player (vari32): 0=survival, 1=creative, 2=adventure.
     pub player_gamemode: i32,
+    /// Player spawn position (x, y, z) as f32 LE.
     pub player_position: (f32, f32, f32),
+    /// Pitch and yaw of the player's initial look direction (f32 LE each).
     pub pitch: f32,
     pub yaw: f32,
-    pub seed: i64,
-    pub spawn_position: (i32, i32, i32),
+
+    // ── Level / world settings ────────────────────────────────────────────────
+    pub settings: LevelSettings,
+
+    // ── Level identity ────────────────────────────────────────────────────────
+    /// Opaque level ID string (base64 in vanilla, "" is fine for custom servers).
+    pub level_id: String,
+    /// Human-readable level name shown on the loading screen.
     pub level_name: String,
+    /// Template content identity (empty if not a template world).
+    pub template_content_identity: String,
+    /// Whether the world is a trial world (false = full world).
+    pub is_trial: bool,
+
+    // ── Movement settings ─────────────────────────────────────────────────────
+    pub movement_settings: SyncedPlayerMovementSettings,
+
+    // ── Time / enchantments ───────────────────────────────────────────────────
+    /// Current world time in ticks (u64 LE).
+    pub current_level_time: u64,
+    /// Seed for the enchantment table (vari32).
+    pub enchantment_seed: i32,
+
+    // ── Block palette ─────────────────────────────────────────────────────────
+    // (written via write_block_palette — loaded from resources/block_states.nbt)
+
+    // ── Multiplayer / server metadata ─────────────────────────────────────────
+    pub multiplayer_correlation_id: String,
+    pub enable_item_stack_net_manager: bool,
+    /// Bedrock version string, e.g. "1.26.32".
+    pub server_version: String,
+
+    // ── Property data (NBT) ───────────────────────────────────────────────────
+    // Written as a TAG_Compound NBT with no entries (0x0a 0x00 0x00 ... 0x00).
+
+    // ── Registry checksum / world template ───────────────────────────────────
+    pub server_block_type_registry_checksum: u64,
+    /// World template UUID (16 bytes, all zero for non-template worlds).
+    pub world_template_id: [u8; 16],
+
+    // ── Feature flags ─────────────────────────────────────────────────────────
+    pub server_enabled_client_side_generation: bool,
+    pub block_network_ids_are_hashes: bool,
+
+    // ── Network permissions ───────────────────────────────────────────────────
+    pub network_permissions: NetworkPermissions,
+
+    pub is_logging_chat: bool,
+
+    // ── Server join information (Option — None = not provided) ────────────────
+    // Written as a single bool: false = no join info.
+
+    // ── Server / world identity strings ──────────────────────────────────────
+    pub server_id: String,
+    pub world_id: String,
+    pub scenario_id: String,
+    pub owner_id: String,
 }
 
 impl StartGame {
-    pub fn write(&self) -> Vec<u8> {
+    pub fn new() -> Self {
+        Self {
+            entity_id: 609,
+            runtime_entity_id: 402,
+            player_gamemode: 1, // Creative
+            player_position: (0.5, -58.38, 0.5),
+            pitch: 0.0,
+            yaw: 0.0,
+            settings: {
+                let mut settings = LevelSettings::new();
+                settings.game_type = 1; // Creative
+                settings
+            },
+            level_id: String::new(),
+            level_name: String::new(),
+            template_content_identity: String::new(),
+            is_trial: false,
+            movement_settings: SyncedPlayerMovementSettings::new(),
+            current_level_time: 0,
+            enchantment_seed: 0,
+            multiplayer_correlation_id: String::new(),
+            enable_item_stack_net_manager: false,
+            server_version: "1.26.32".to_string(),
+            server_block_type_registry_checksum: 0,
+            world_template_id: [0u8; 16],
+            server_enabled_client_side_generation: false,
+            block_network_ids_are_hashes: true,
+            network_permissions: NetworkPermissions::new(),
+            is_logging_chat: false,
+            server_id: String::new(),
+            world_id: String::new(),
+            scenario_id: String::new(),
+            owner_id: String::new(),
+        }
+    }
+
+    pub fn write(&self) -> PResult<Vec<u8>> {
         let mut buf = Vec::new();
 
-        // == ORDEN EXACTO DEL Marshal() de gophertunnel ==
-
-        // 1: EntityUniqueID (Varint64)
+        // Entity IDs
         write_vari64(&mut buf, self.entity_id);
-        // 2: EntityRuntimeID (Varuint64)
         write_varu64(&mut buf, self.runtime_entity_id);
-        // 3: PlayerGameMode (Varint32)
-        write_vari32(&mut buf, self.player_gamemode);
 
-        // 4: PlayerPosition (Vec3 = 3x Float32 LE)
+        // Player state
+        write_vari32(&mut buf, self.player_gamemode);
         buf.write_f32::<LittleEndian>(self.player_position.0).unwrap();
         buf.write_f32::<LittleEndian>(self.player_position.1).unwrap();
         buf.write_f32::<LittleEndian>(self.player_position.2).unwrap();
-
-        // 5: Pitch (Float32 LE)
         buf.write_f32::<LittleEndian>(self.pitch).unwrap();
-        // 6: Yaw (Float32 LE)
         buf.write_f32::<LittleEndian>(self.yaw).unwrap();
 
-        // 7: WorldSeed (Int64 LE)
-        buf.write_i64::<LittleEndian>(self.seed).unwrap();
+        // Level settings (big embedded struct)
+        self.settings.write_into(&mut buf);
 
-        // 8: SpawnBiomeType (Int16 LE) = 0 (default)
-        buf.write_i16::<LittleEndian>(0).unwrap();
-        // 9: UserDefinedBiomeName (String)
-        write_string(&mut buf, "plains");
+        // Level identity
+        helpers::write_string(&mut buf, &self.level_id);
+        helpers::write_string(&mut buf, &self.level_name);
+        helpers::write_string(&mut buf, &self.template_content_identity);
+        buf.push(if self.is_trial { 1 } else { 0 });
 
-        // 10: Dimension (Varint32) = 0 (Overworld)
-        write_vari32(&mut buf, 0);
-        // 11: Generator (Varint32) = 2 (Flat)
-        write_vari32(&mut buf, 2);
-        // 12: WorldGameMode (Varint32)
-        write_vari32(&mut buf, self.player_gamemode);
-        // 13: Hardcore (Bool)
-        buf.push(0);
-        // 14: Difficulty (Varint32) = 1 (Easy)
-        write_vari32(&mut buf, 1);
+        // Movement settings
+        self.movement_settings.write_into(&mut buf);
 
-        // 15: WorldSpawn (BlockPos: Varint32 x, Varint32 y, Varint32 z)
-        write_vari32(&mut buf, self.spawn_position.0);
-        write_vari32(&mut buf, self.spawn_position.1);
-        write_vari32(&mut buf, self.spawn_position.2);
+        // Time / enchantments
+        buf.write_u64::<LittleEndian>(self.current_level_time).unwrap();
+        write_vari32(&mut buf, self.enchantment_seed);
 
-        // 16: AchievementsDisabled (Bool)
-        buf.push(0);
-        // 17: EditorWorldType (Varint32) = 0
-        write_vari32(&mut buf, 0);
-        // 18: CreatedInEditor (Bool)
-        buf.push(0);
-        // 19: ExportedFromEditor (Bool)
-        buf.push(0);
+        // Block palette: varu32 count + raw network-NBT entries
+        write_block_palette(&mut buf);
 
-        // 20: DayCycleLockTime (Varint32) — ServerEditorConnectionPolicy va MÁS ADELANTE
-        write_vari32(&mut buf, 0);
-        // 21: EducationEditionOffer (Varint32)
-        write_vari32(&mut buf, 0);
-        // 22: EducationFeaturesEnabled (Bool)
-        buf.push(0);
-        // 23: EducationProductID (String)
-        write_string(&mut buf, "");
+        // Multiplayer / server metadata
+        helpers::write_string(&mut buf, &self.multiplayer_correlation_id);
+        buf.push(if self.enable_item_stack_net_manager { 1 } else { 0 });
+        helpers::write_string(&mut buf, &self.server_version);
 
-        // 24: RainLevel (Float32 LE)
-        buf.write_f32::<LittleEndian>(0.0).unwrap();
-        // 25: LightningLevel (Float32 LE)
-        buf.write_f32::<LittleEndian>(0.0).unwrap();
+        // Player property data (empty NBT compound in Network NBT format):
+        // TAG_Compound (0x0a) + name len varint (0x00) + TAG_End (0x00)
+        buf.push(0x0a); // TAG_Compound
+        buf.push(0x00); // varint name length = 0
+        buf.push(0x00); // TAG_End
 
-        // 26: ConfirmedPlatformLockedContent (Bool)
-        buf.push(0);
-        // 27: MultiPlayerGame (Bool)
-        buf.push(1);
-        // 28: LANBroadcastEnabled (Bool)
-        buf.push(1);
-        // 29: XBLBroadcastMode (Varint32) = 4
-        write_vari32(&mut buf, 4);
-        // 30: PlatformBroadcastMode (Varint32) = 4
-        write_vari32(&mut buf, 4);
-        // 31: CommandsEnabled (Bool)
-        buf.push(1);
-        // 32: TexturePackRequired (Bool)
-        buf.push(0);
+        // Registry checksum and world template UUID
+        buf.write_u64::<LittleEndian>(self.server_block_type_registry_checksum).unwrap();
+        buf.extend_from_slice(&self.world_template_id);
 
-        // 33: GameRules (FuncSlice: Varuint32 count = 0)
-        write_varu32(&mut buf, 0);
-        // 34: Experiments (SliceUint32Length: u32 LE count = 0)
-        buf.write_u32::<LittleEndian>(0).unwrap();
-        // 35: ExperimentsPreviouslyToggled (Bool)
-        buf.push(0);
-        // 36: BonusChestEnabled (Bool)
-        buf.push(0);
-        // 37: StartWithMapEnabled (Bool)
-        buf.push(0);
-        // 38: PlayerPermissions (Varint32) = 2 (Operator)
-        write_vari32(&mut buf, 2);
-        // 39: ServerChunkTickRadius (Int32 LE)
-        buf.write_i32::<LittleEndian>(4).unwrap();
+        // Feature flags
+        buf.push(if self.server_enabled_client_side_generation { 1 } else { 0 });
+        buf.push(if self.block_network_ids_are_hashes { 1 } else { 0 });
 
-        // 40: HasLockedBehaviourPack (Bool)
-        buf.push(0);
-        // 41: HasLockedTexturePack (Bool)
-        buf.push(0);
-        // 42: FromLockedWorldTemplate (Bool)
-        buf.push(0);
-        // 43: MSAGamerTagsOnly (Bool)
-        buf.push(0);
-        // 44: FromWorldTemplate (Bool)
-        buf.push(0);
-        // 45: WorldTemplateSettingsLocked (Bool)
-        buf.push(0);
-        // 46: OnlySpawnV1Villagers (Bool)
-        buf.push(0);
-        // 47: PersonaDisabled (Bool)
-        buf.push(0);
-        // 48: CustomSkinsDisabled (Bool)
-        buf.push(0);
-        // 49: EmoteChatMuted (Bool)
-        buf.push(0);
+        // Network permissions
+        self.network_permissions.write_into(&mut buf);
 
-        // 50: BaseGameVersion (String)
-        write_string(&mut buf, "1.26.32");
-        // 51: LimitedWorldWidth (Int32 LE)
-        buf.write_i32::<LittleEndian>(0).unwrap();
-        // 52: LimitedWorldDepth (Int32 LE)
-        buf.write_i32::<LittleEndian>(0).unwrap();
-        // 53: NewNether (Bool)
-        buf.push(0);
+        buf.push(if self.is_logging_chat { 1 } else { 0 });
 
-        // 54: EducationSharedResourceURI (Single = ButtonName + LinkURI)
-        write_string(&mut buf, ""); // ButtonName
-        write_string(&mut buf, ""); // LinkURI
+        // Server join information: Option<ServerJoinInformation>
+        // Written as a bool: false = None (no join info provided)
+        buf.push(0x00);
 
-        // 55: ForceExperimentalGameplay (OptionalFunc: 0 = not present)
-        buf.push(0);
-        // 56: ChatRestrictionLevel (Uint8)
-        buf.push(0);
-        // 57: DisablePlayerInteractions (Bool)
-        buf.push(0);
+        // Server / world identity strings
+        helpers::write_string(&mut buf, &self.server_id);
+        helpers::write_string(&mut buf, &self.world_id);
+        helpers::write_string(&mut buf, &self.scenario_id);
+        helpers::write_string(&mut buf, &self.owner_id);
 
-        // === Campos que estaban mal posicionados — ahora en posición CORRECTA ===
-        // 58: ServerEditorConnectionPolicy (Varint32)
-        write_vari32(&mut buf, 0);
-        // 59: AllowAnonymousBlockDropsInEditorWorlds (Bool)
-        buf.push(0);
-
-        // 60: LevelID (String) — faltaba completamente
-        write_string(&mut buf, "");
-        // 61: WorldName (String) — faltaba completamente
-        write_string(&mut buf, &self.level_name);
-        // 62: TemplateContentIdentity (String) — faltaba completamente
-        write_string(&mut buf, "");
-        // 63: Trial (Bool) — faltaba completamente
-        buf.push(0);
-
-        // 64: PlayerMovementSettings
-        write_vari32(&mut buf, 0); // RewindHistorySize
-        buf.push(0);               // ServerAuthoritativeBlockBreaking
-
-        // 65: Time (Int64 LE)
-        buf.write_i64::<LittleEndian>(0).unwrap();
-        // 66: EnchantmentSeed (Varint32)
-        write_vari32(&mut buf, 0);
-
-        // 67: Blocks (Slice of BlockEntry)
-        buf.extend_from_slice(get_block_palette());
-
-        // 68: MultiPlayerCorrelationID (String) — SIN Items antes de este campo
-        write_string(&mut buf, "");
-        // 69: ServerAuthoritativeInventory (Bool)
-        buf.push(0);
-        // 70: GameVersion (String)
-        write_string(&mut buf, "1.26.32");
-
-        // 71: PropertyData (NBT NetworkLittleEndian - compound vacío)
-        buf.push(0x0a);                               // TAG_Compound
-        buf.push(0x00);                               // nombre vacío (varint 0)
-        buf.push(0x00);                               // TAG_End
-
-        // 72: ServerBlockStateChecksum (Uint64 LE)
-        buf.write_u64::<LittleEndian>(0).unwrap();
-        // 73: WorldTemplateID (UUID: 16 bytes cero)
-        buf.extend_from_slice(&[0u8; 16]);
-
-        // 74: ClientSideGeneration (Bool)
-        buf.push(0);
-        // 75: UseBlockNetworkIDHashes (Bool)
-        buf.push(0);
-        // 76: ServerAuthoritativeSound (Bool)
-        buf.push(0);
-        // 77: IsLoggingChat (Bool) — faltaba
-        buf.push(0);
-
-        // 78: ServerJoinInformation (OptionalMarshaler: 0 = nil/not present)
-        buf.push(0);
-        // 79: ServerID (String) — faltaba
-        write_string(&mut buf, "");
-        // 80: ScenarioID (String) — faltaba
-        write_string(&mut buf, "");
-        // 81: WorldID (String) — faltaba
-        write_string(&mut buf, "");
-        // 82: OwnerID (String) — faltaba
-        write_string(&mut buf, "");
-
-        buf
+        let hex: Vec<String> = buf.iter().map(|b| format!("{:02x}", b)).collect();
+        log::debug!("[StartGame::write] payload size: {} bytes raw=[{}]", buf.len(), hex.join(" "));
+        Ok(buf)
     }
 }
