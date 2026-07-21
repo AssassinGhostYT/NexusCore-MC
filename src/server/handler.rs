@@ -34,8 +34,7 @@ pub async fn handle_packet(
         return Ok(());
     }
 
-    let batch_payload = &payload[1..];
-    let packets_res = decode_batch(batch_payload, state.compression_enabled);
+    let packets_res = decode_batch(&payload, state.compression_enabled);
     match packets_res {
         Ok(pkt_list) => {
             for packet in pkt_list {

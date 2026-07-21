@@ -15,6 +15,7 @@ pub struct GamePacket {
 
 const ID_GAME_PACKET: u8 = 0xFE;
 const COMPRESSION_ZLIB: u8 = 0x00;
+#[allow(dead_code)]
 const COMPRESSION_SNAPPY: u8 = 0x01;
 const COMPRESSION_NONE: u8 = 0xFF;
 

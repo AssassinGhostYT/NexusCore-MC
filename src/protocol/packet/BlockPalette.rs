@@ -13,6 +13,7 @@ pub fn write_block_palette(buf: &mut Vec<u8>) {
 }
 
 /// Counts the number of TAG_Compound (0x0a) root entries in a network-NBT stream.
+#[allow(dead_code)]
 fn count_nbt_entries(data: &[u8]) -> usize {
     let mut pos = 0;
     let mut count = 0;
