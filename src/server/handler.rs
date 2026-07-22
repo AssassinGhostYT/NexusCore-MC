@@ -3,7 +3,6 @@ use tokio::sync::mpsc;
 use crate::raknet::server::RakNetCommand;
 use crate::protocol::packet::*;
 use crate::protocol::types::*;
-use crate::protocol;
 use super::client::ClientState;
 use super::packets;
 use crate::log_t;
@@ -38,6 +37,15 @@ pub async fn handle_packet(
     match packets_res {
         Ok(pkt_list) => {
             for packet in pkt_list {
+                let hex: Vec<String> = packet.payload.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+                log::info!(
+                    "[{}] RECV INBOUND GAME PACKET: id={} (0x{:02x}), len={}, hex_prefix=[{}]",
+                    addr,
+                    packet.id,
+                    packet.id,
+                    packet.payload.len(),
+                    hex.join(" ")
+                );
                 match packet.id {
                     ID_REQUEST_NETWORK_SETTINGS => {
                         handle_request_network_settings(addr, &packet.payload, state, cmd_tx).await?;
@@ -64,11 +72,10 @@ pub async fn handle_packet(
                         log::info!("[{}] Received ClientCacheStatus (ID 129), ignoring...", addr);
                     }
                     ID_PACKET_VIOLATION_WARNING => {
+                        let hex: Vec<String> = packet.payload.iter().map(|b| format!("{:02x}", b)).collect();
+                        log::error!("[{}] PACKET VIOLATION WARNING RECEIVED! Raw hex=[{}]", addr, hex.join(" "));
                         if let Ok(violation) = PacketViolationWarning::read(&packet.payload) {
-                            log_t!(error, VIOLATION_DETECTED, violation.packet_id, violation.severity, violation.context);
-                            if violation.severity == 3 {
-                                log::error!("Connection will be terminated by client.");
-                            }
+                            log::error!("[{}] Violation details: packet_id={}, severity={}, context='{}'", addr, violation.packet_id, violation.severity, violation.context);
                         }
                     }
                     ID_SET_LOCAL_PLAYER_AS_INITIALISED => {
@@ -103,8 +110,11 @@ pub async fn handle_packet(
                                 let commands_pkg = packets::create_available_commands_pkg();
                                 spawn_batch.push(commands_pkg);
 
+                                let stop_waiting_pkg = packets::create_level_event_pkg(14, 0);
+                                spawn_batch.push(stop_waiting_pkg);
+
                                 state.send_packets(addr, cmd_tx, &spawn_batch).await?;
-                                log::info!("[{}] Player active state synchronized!", addr);
+                                log::info!("[{}] Player active state synchronized on SetLocalPlayerAsInitialised!", addr);
                             }
                         }
                     }
@@ -180,7 +190,8 @@ pub async fn handle_packet(
                         }
                     }
                     other => {
-                        log::debug!("[{}] Unhandled Game Packet ID: {} (0x{:02x})", addr, other, other);
+                        let hex: Vec<String> = packet.payload.iter().map(|b| format!("{:02x}", b)).collect();
+                        log::info!("[{}] Received Game Packet ID: {} (0x{:02x}), length={}, payload=[{}]", addr, other, other, packet.payload.len(), hex.join(" "));
                     }
                 }
             }
@@ -236,75 +247,38 @@ async fn handle_login(
     cmd_tx: &mpsc::Sender<RakNetCommand>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(login) = Login::read(payload) {
+        state.username = login.username.clone();
+        let mut uuid_bytes = [0u8; 16];
+        let bytes = login.uuid.as_bytes();
+        let len = bytes.len().min(16);
+        uuid_bytes[..len].copy_from_slice(&bytes[..len]);
+        state.uuid = uuid_bytes;
         log::info!("Player Login Request: Username: {}, UUID: {}", login.username, login.uuid);
         
         if !login.identity_public_key.is_empty() {
-            log_t!(info, XBOX_AUTH_REQUESTED);
-            match protocol::encryption::parse_client_public_key(&login.identity_public_key) {
-                Ok(client_pub) => {
-                    let server_secret = p384::SecretKey::random(&mut rand::rngs::OsRng);
-                    let mut salt = [0u8; 16];
-                    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
-                    
-                    let shared_secret = protocol::encryption::compute_shared_secret(&server_secret, &client_pub);
-                    
-                    match protocol::encryption::generate_handshake_jwt(&server_secret, &salt) {
-                        Ok(handshake_jwt) => {
-                            let crypto_state = protocol::encryption::EncryptionState::new(&shared_secret, &salt);
-                            
-                            let handshake_pkg = GamePacket {
-                                id: ID_SERVER_TO_CLIENT_HANDSHAKE,
-                                sender_subclient: 0,
-                                recipient_subclient: 0,
-                                payload: ServerToClientHandshake { jwt: handshake_jwt }.write()?,
-                            };
-                            
-                            let mut temp_state = ClientState {
-                                compression_enabled: state.compression_enabled,
-                                encryption_state: None,
-                                last_chunk_x: None,
-                                last_chunk_z: None,
-                                loaded_chunks: std::collections::HashSet::new(),
-                                world_data_sent: false,
-                                chunk_radius: 4,
-                                last_pitch: 0.0,
-                                last_yaw: 0.0,
-                            };
-                            temp_state.send_packets(addr, cmd_tx, &[handshake_pkg]).await?;
-                            
-                            state.encryption_state = Some(crypto_state);
-                            log_t!(info, ENCRYPTION_ENABLED);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to generate handshake JWT: {:?}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse client public key: {:?}", e);
-                }
-            }
+            log::info!("[Login] Xbox Live player: {} (UUID: {})", login.username, login.uuid);
         } else {
             log_t!(info, OFFLINE_LOGIN);
-            let play_status_pkg = GamePacket {
-                id: ID_PLAY_STATUS,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: PlayStatus { status: 0 }.write()?,
-            };
-            let packs_info_pkg = GamePacket {
-                id: ID_RESOURCE_PACKS_INFO,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: ResourcePacksInfo {
-                    must_accept: false,
-                    has_addons: false,
-                    has_scripts: false,
-                }.write()?,
-            };
-            
-            state.send_packets(addr, cmd_tx, &[play_status_pkg, packs_info_pkg]).await?;
         }
+
+        let play_status_pkg = GamePacket {
+            id: ID_PLAY_STATUS,
+            sender_subclient: 0,
+            recipient_subclient: 0,
+            payload: PlayStatus { status: 0 }.write()?,
+        };
+        let packs_info_pkg = GamePacket {
+            id: ID_RESOURCE_PACKS_INFO,
+            sender_subclient: 0,
+            recipient_subclient: 0,
+            payload: ResourcePacksInfo {
+                must_accept: false,
+                has_addons: false,
+                has_scripts: false,
+            }.write()?,
+        };
+        
+        state.send_packets(addr, cmd_tx, &[play_status_pkg, packs_info_pkg]).await?;
     } else {
         log::warn!("Failed to parse Login packet payload");
     }
@@ -395,11 +369,26 @@ async fn handle_resource_pack_client_response(
                 payload: ItemRegistry::load_from_json().write()?,
             };
 
+            let player_list = PlayerListAdd {
+                entries: vec![PlayerListAddEntry {
+                    uuid: state.uuid,
+                    entity_unique_id: 1,
+                    username: state.username.clone(),
+                }],
+            };
+            let player_list_pkg = GamePacket {
+                id: ID_PLAYER_LIST,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: player_list.write()?,
+            };
+
             state.send_packets(addr, cmd_tx, &[
                 jigsaw_pkg,
                 voxel_pkg,
                 start_game_pkg,
                 item_registry_pkg,
+                player_list_pkg,
             ]).await?;
         }
     } else {
@@ -443,7 +432,7 @@ async fn maybe_update_chunks(
         let publisher_payload = NetworkChunkPublisherUpdate {
             position: BlockPos { x: cx * 16, y: pos.1 as i32, z: cz * 16 },
             radius: radius << 4,
-            server_built_chunks: all_chunks,
+            server_built_chunks: Vec::new(),
         }.write()?;
         let publisher_pkg = GamePacket {
             id: ID_NETWORK_CHUNK_PUBLISHER_UPDATE,
@@ -454,6 +443,7 @@ async fn maybe_update_chunks(
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
 
         let chunk_payload = make_flat_chunk_payload();
+        let mut new_chunk_pkgs = Vec::new();
         for dx in -r..=r {
             for dz in -r..=r {
                 let chunk_x = cx + dx;
@@ -476,9 +466,15 @@ async fn maybe_update_chunks(
                     recipient_subclient: 0,
                     payload: chunk_payload_written,
                 };
-                state.send_packets(addr, cmd_tx, &[chunk_pkg]).await?;
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                new_chunk_pkgs.push(chunk_pkg);
+                if new_chunk_pkgs.len() >= 16 {
+                    state.send_packets(addr, cmd_tx, &new_chunk_pkgs).await?;
+                    new_chunk_pkgs.clear();
+                }
             }
+        }
+        if !new_chunk_pkgs.is_empty() {
+            state.send_packets(addr, cmd_tx, &new_chunk_pkgs).await?;
         }
     }
     Ok(())
@@ -503,26 +499,13 @@ async fn handle_player_auth_input(
     cmd_tx: &mpsc::Sender<RakNetCommand>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(pai) = PlayerAuthInput::read(payload) {
-        if (pai.pitch - state.last_pitch).abs() > 5.0 || (pai.yaw - state.last_yaw).abs() > 5.0 {
-            log::info!("[{}] Camera rotation: pitch={:.2}, yaw={:.2}", addr, pai.pitch, pai.yaw);
-            state.last_pitch = pai.pitch;
-            state.last_yaw = pai.yaw;
-        }
+        log::info!(
+            "[{}] PlayerAuthInput: pos=({:.2}, {:.2}, {:.2}), pitch={:.2}, yaw={:.2}",
+            addr, pai.position.x, pai.position.y, pai.position.z, pai.pitch, pai.yaw
+        );
+        state.last_pitch = pai.pitch;
+        state.last_yaw = pai.yaw;
         maybe_update_chunks(addr, (pai.position.x, pai.position.y, pai.position.z), state, cmd_tx).await?;
-
-        let prediction_pkg = CorrectPlayerMovePrediction {
-            position: (pai.position.x, pai.position.y, pai.position.z),
-            pitch: pai.pitch,
-            yaw: pai.yaw,
-            tick: pai.tick,
-        }.write()?;
-        let prediction_pkg = GamePacket {
-            id: ID_CORRECT_PLAYER_MOVE_PREDICTION,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: prediction_pkg,
-        };
-        state.send_packets(addr, cmd_tx, &[prediction_pkg]).await?;
     } else {
         log::warn!("Failed to parse PlayerAuthInput!");
     }
@@ -555,19 +538,15 @@ async fn handle_request_chunk_radius(
         // 2. Biomes + Creative + Actors + Abilities + Commands
         let biomes_base64 = BIOMES_BASE64;
         let uncompressed_biome_payload = general_purpose::STANDARD.decode(biomes_base64).unwrap();
-        let compressed_payload = compress_deflate(&uncompressed_biome_payload).unwrap();
-        let mut biome_payload = Vec::new();
-        crate::protocol::varint::write_varu32(&mut biome_payload, compressed_payload.len() as u32);
-        biome_payload.extend_from_slice(&compressed_payload);
         
         let biome_pkg = GamePacket {
-            id: ID_COMPRESSED_BIOME_DEFINITIONS,
+            id: ID_BIOME_DEFINITION_LIST,
             sender_subclient: 0,
             recipient_subclient: 0,
-            payload: biome_payload,
+            payload: uncompressed_biome_payload,
         };
         
-        let creative_payload = CreativeContent::new().write();
+        let creative_payload = vec![0x00];
         let creative_pkg = GamePacket {
             id: ID_CREATIVE_CONTENT,
             sender_subclient: 0,
@@ -576,9 +555,25 @@ async fn handle_request_chunk_radius(
         };
 
         let actor_id_payload = vec![
-            0x0a, 0x00, 0x09, 0x06, 0x69, 0x64, 0x6c, 0x69, 0x73, 0x74, 0x0a, 0x02,
-            0x08, 0x02, 0x69, 0x64, 0x10, 0x6d, 0x69, 0x6e, 0x65, 0x63, 0x72, 0x61,
-            0x66, 0x74, 0x3a, 0x70, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x00, 0x00
+            0x0a, // Root TAG_Compound
+            0x00, // Root name len (0)
+            
+            0x09, // TAG_List
+            0x06, 0x00, // Name len = 6 (u16 LE)
+            b'i', b'd', b'l', b'i', b's', b't', // "idlist"
+            
+            0x0a, // Element type = TAG_Compound
+            0x01, 0x00, 0x00, 0x00, // Count = 1 (i32 LE)
+            
+            // Element 0:
+            0x08, // TAG_String
+            0x02, 0x00, // Name len = 2 (u16 LE)
+            b'i', b'd', // "id"
+            0x10, 0x00, // Value len = 16 (u16 LE)
+            b'm', b'i', b'n', b'e', b'c', b'r', b'a', b'f', b't', b':', b'p', b'l', b'a', b'y', b'e', b'r',
+            
+            0x00, // TAG_End for Element 0
+            0x00, // TAG_End for Root
         ]; 
         let actor_id_pkg = GamePacket {
             id: ID_AVAILABLE_ACTOR_IDENTIFIERS,
@@ -596,10 +591,13 @@ async fn handle_request_chunk_radius(
         state.send_packets(addr, cmd_tx, &[actor_id_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // 3. Chunks
+        state.last_chunk_x = Some(0);
+        state.last_chunk_z = Some(0);
+
         let chunk_payload = make_flat_chunk_payload();
         let mut built_chunks = Vec::new();
         let r = radius as i32;
+        let mut chunk_pkgs = Vec::new();
         for dx in -r..=r {
             for dz in -r..=r {
                 state.loaded_chunks.insert((dx, dz));
@@ -617,9 +615,16 @@ async fn handle_request_chunk_radius(
                     recipient_subclient: 0,
                     payload: chunk_payload_written,
                 };
-                state.send_packets(addr, cmd_tx, &[chunk_pkg]).await?;
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                chunk_pkgs.push(chunk_pkg);
+                if chunk_pkgs.len() >= 16 {
+                    state.send_packets(addr, cmd_tx, &chunk_pkgs).await?;
+                    chunk_pkgs.clear();
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
             }
+        }
+        if !chunk_pkgs.is_empty() {
+            state.send_packets(addr, cmd_tx, &chunk_pkgs).await?;
         }
 
         // 4. NetworkChunkPublisherUpdate
@@ -627,7 +632,7 @@ async fn handle_request_chunk_radius(
         let publisher_payload = NetworkChunkPublisherUpdate {
             position: BlockPos { x: 0, y: -60, z: 0 },
             radius: (radius as u32) << 4,
-            server_built_chunks: built_chunks,
+            server_built_chunks: Vec::new(),
         }.write()?;
         let publisher_pkg = GamePacket {
             id: ID_NETWORK_CHUNK_PUBLISHER_UPDATE,
@@ -638,7 +643,7 @@ async fn handle_request_chunk_radius(
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // 5. PlayStatus PlayerSpawn (status = 3)
+        // Send PlayStatus(3) PlayerSpawn after chunks to prompt client for SetLocalPlayerAsInitialised
         let spawn_payload = PlayStatus { status: 3 }.write()?;
         let spawn_pkg = GamePacket {
             id: ID_PLAY_STATUS,
@@ -647,15 +652,7 @@ async fn handle_request_chunk_radius(
             payload: spawn_payload,
         };
         state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        // 6. LevelEvent StopWaiting to clear loading screen
-        let stop_waiting_pkg_1 = packets::create_level_event_pkg(14, 0);
-        let stop_waiting_pkg_2 = packets::create_level_event_pkg(16398, 0); // 0x4000 + 14 (StopWaiting)
-        let stop_waiting_pkg_3 = packets::create_level_event_pkg(9501, 0);
-        let stop_waiting_pkg_4 = packets::create_level_event_pkg(25885, 0); // 0x4000 + 9501
-        state.send_packets(addr, cmd_tx, &[stop_waiting_pkg_1, stop_waiting_pkg_2, stop_waiting_pkg_3, stop_waiting_pkg_4]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        log::info!("[{}] Sent PlayStatus(3) PlayerSpawn after chunks!", addr);
     }
     Ok(())
 }

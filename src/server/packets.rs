@@ -70,9 +70,9 @@ pub fn create_move_player_pkg(runtime_entity_id: u64, x: f32, y: f32, z: f32) ->
             runtime_entity_id,
             position: MovePlayerPosition { x, y, z },
             pitch: 0.0, yaw: 0.0, head_yaw: 0.0,
-            mode: 2, on_ground: true,
+            mode: 0, on_ground: true,
             ridden_entity_runtime_id: 0,
-            teleport_cause: 3, source_actor_type: 0, tick: 0,
+            teleport_cause: 0, source_actor_type: 0, tick: 0,
         }.write().unwrap(),
     }
 }

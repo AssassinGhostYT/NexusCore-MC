@@ -6,6 +6,8 @@ use crate::protocol;
 use crate::protocol::packet::{GamePacket, encode_batch};
 
 pub struct ClientState {
+    pub username: String,
+    pub uuid: [u8; 16],
     pub compression_enabled: bool,
     pub encryption_state: Option<protocol::encryption::EncryptionState>,
     pub last_chunk_x: Option<i32>,
@@ -20,6 +22,8 @@ pub struct ClientState {
 impl ClientState {
     pub fn new() -> Self {
         Self {
+            username: String::new(),
+            uuid: [0u8; 16],
             compression_enabled: false,
             encryption_state: None,
             last_chunk_x: None,
@@ -38,17 +42,29 @@ impl ClientState {
         cmd_tx: &mpsc::Sender<RakNetCommand>,
         packets: &[GamePacket],
     ) -> std::io::Result<()> {
+        for p in packets {
+            log::info!(
+                "[{}] SEND OUTBOUND GAME PACKET: id={} (0x{:02x}), payload_len={}",
+                addr,
+                p.id,
+                p.id,
+                p.payload.len()
+            );
+        }
         let mut reply_payload = encode_batch(packets, self.compression_enabled);
         if let Some(ref mut crypto) = self.encryption_state {
             let encrypted_body = crypto.encrypt_packet(&reply_payload[1..]);
             reply_payload.truncate(1);
             reply_payload.extend_from_slice(&encrypted_body);
         }
-        let _ = cmd_tx.send(RakNetCommand::Send(
+        let res = cmd_tx.send(RakNetCommand::Send(
             addr,
             reply_payload,
             Reliability::ReliableOrdered,
         )).await;
+        if let Err(e) = res {
+            log::error!("[{}] Failed to send RakNetCommand: {:?}", addr, e);
+        }
         Ok(())
     }
 }

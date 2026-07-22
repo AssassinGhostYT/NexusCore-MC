@@ -33,7 +33,7 @@ impl Server {
                     self.clients.insert(addr, ClientState::new());
                 }
                 RakNetEvent::Disconnected(addr) => {
-                    log_t!(info, CLIENT_DISCONNECTED, addr);
+                    log::info!("[server/mod.rs] RakNet Disconnected event triggered for client {}", addr);
                     self.clients.remove(&addr);
                 }
                 RakNetEvent::Packet(addr, payload) => {

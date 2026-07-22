@@ -203,3 +203,7 @@ pub use item_stack_request::ItemStackRequest;
 pub use spawn_settings::SpawnSettings;
 pub use game_rule_legacy::GameRuleLegacyData;
 pub use experiments::Experiments;
+
+#[path = "PlayerList.rs"]
+pub mod player_list;
+pub use player_list::{PlayerListAdd, PlayerListAddEntry};

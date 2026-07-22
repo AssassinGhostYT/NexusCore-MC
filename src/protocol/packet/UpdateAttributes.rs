@@ -24,18 +24,17 @@ impl UpdateAttributes {
         write_varu32(&mut buf, self.attributes.len() as u32);
 
         for attr in &self.attributes {
-            // Marshal encodes/decodes an Attribute:
-            // Min (Float32)
+            // Min (Float32 LE)
             buf.write_f32::<LittleEndian>(attr.min).unwrap();
-            // Max (Float32)
+            // Max (Float32 LE)
             buf.write_f32::<LittleEndian>(attr.max).unwrap();
-            // Value (Float32)
+            // Current Value (Float32 LE)
             buf.write_f32::<LittleEndian>(attr.value).unwrap();
-            // DefaultMin (Float32)
-            buf.write_f32::<LittleEndian>(attr.default_min).unwrap();
-            // DefaultMax (Float32)
-            buf.write_f32::<LittleEndian>(attr.default_max).unwrap();
-            // Default (Float32)
+            // Default Min (Float32 LE) - Added in v729/v1001
+            buf.write_f32::<LittleEndian>(attr.min).unwrap();
+            // Default Max (Float32 LE) - Added in v729/v1001
+            buf.write_f32::<LittleEndian>(attr.max).unwrap();
+            // Default Value (Float32 LE)
             buf.write_f32::<LittleEndian>(attr.default).unwrap();
             // Name (String)
             write_string(&mut buf, &attr.name);

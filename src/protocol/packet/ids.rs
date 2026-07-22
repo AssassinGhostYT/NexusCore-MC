@@ -18,6 +18,7 @@ pub const ID_SET_ACTOR_DATA: u32 = 39;
 pub const ID_CONTAINER_CLOSE: u32 = 47;
 pub const ID_INVENTORY_CONTENT: u32 = 49;
 pub const ID_LEVEL_CHUNK: u32 = 58;
+pub const ID_PLAYER_LIST: u32 = 63;
 pub const ID_SET_PLAYER_GAME_TYPE: u32 = 62;
 pub const ID_CHUNK_RADIUS_UPDATED: u32 = 70;
 pub const ID_REQUEST_CHUNK_RADIUS: u32 = 69;

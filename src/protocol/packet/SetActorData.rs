@@ -24,24 +24,24 @@ impl SetActorData {
         write_varu32(&mut buf, 4);
 
         // Entry 0: EntityDataKeyFlags (0) -> Int64 (7)
-        write_varu32(&mut buf, 0); // key
-        write_varu32(&mut buf, 7); // type
+        write_varu32(&mut buf, 0); // key (varu32)
+        buf.push(7);               // type (i8)
         let flags: i64 = (1i64 << 35) | (1i64 << 48) | (1i64 << 49);
         write_vari64(&mut buf, flags);
 
         // Entry 1: EntityDataKeyScale (42) -> Float (3)
-        write_varu32(&mut buf, 42); // key
-        write_varu32(&mut buf, 3);  // type
+        write_varu32(&mut buf, 42); // key (varu32)
+        buf.push(3);                // type (i8)
         buf.write_f32::<LittleEndian>(1.0).unwrap();
 
         // Entry 2: EntityDataKeyWidth (57) -> Float (3)
-        write_varu32(&mut buf, 57); // key
-        write_varu32(&mut buf, 3);  // type
+        write_varu32(&mut buf, 57); // key (varu32)
+        buf.push(3);                // type (i8)
         buf.write_f32::<LittleEndian>(0.6).unwrap();
 
         // Entry 3: EntityDataKeyHeight (58) -> Float (3)
-        write_varu32(&mut buf, 58); // key
-        write_varu32(&mut buf, 3);  // type
+        write_varu32(&mut buf, 58); // key (varu32)
+        buf.push(3);                // type (i8)
         buf.write_f32::<LittleEndian>(1.8).unwrap();
 
         // 3. Properties (PropertySyncData)

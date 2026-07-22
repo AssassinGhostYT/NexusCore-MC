@@ -238,10 +238,13 @@ impl RakNetServer {
             _ => {}
         }
 
+        if let Some(session) = self.sessions.get_mut(&src) {
+            session.last_activity = Instant::now();
+        }
+
         // Handle ACK/NACK packets for established or connecting sessions
         if packet_id == ID_ACK || packet_id == ID_NACK {
             if let Some(session) = self.sessions.get_mut(&src) {
-                session.last_activity = Instant::now();
                 if let Some(ack_nack) = AckNack::read(packet_id, &packet[1..]) {
                     match ack_nack {
                         AckNack::Ack(seqs) => {
@@ -554,7 +557,7 @@ impl RakNetServer {
             }
             ID_DISCONNECT => {
                 session.state = SessionState::Disconnected;
-                log::debug!("Client requested disconnect: {}", session.address);
+                log::info!("[raknet/server.rs:557] Client requested disconnect (ID_DISCONNECT 0x15): {}", session.address);
                 let _ = event_tx.send(RakNetEvent::Disconnected(session.address)).await;
             }
             _ => {
@@ -640,7 +643,7 @@ impl RakNetServer {
         for (addr, session) in self.sessions.iter_mut() {
             // Check session timeout
             if session.last_activity.elapsed() > Duration::from_secs(10) {
-                log::debug!("Session timed out for client {}", addr);
+                log::info!("[raknet/server.rs:643] Session timed out (no activity for >10s) for client {}", addr);
                 session.state = SessionState::Disconnected;
                 disconnected.push(*addr);
                 continue;

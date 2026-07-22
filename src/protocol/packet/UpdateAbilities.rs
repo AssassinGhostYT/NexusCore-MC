@@ -1,4 +1,5 @@
 use byteorder::{LittleEndian, WriteBytesExt};
+use crate::protocol::varint::write_varu32;
 
 pub struct SerializedLayer {
     pub layer_type: u16, // u16 LE (enum Repr)
@@ -22,8 +23,8 @@ impl UpdateAbilities {
         buf.write_u8(self.player_permissions).unwrap();
         buf.write_i8(self.command_permissions).unwrap();
         
-        // Vec length is serialized as u8
-        buf.write_u8(self.layers.len() as u8).unwrap();
+        // Vec length is serialized as VarU32
+        write_varu32(buf, self.layers.len() as u32);
         
         for layer in &self.layers {
             buf.write_u16::<LittleEndian>(layer.layer_type).unwrap();

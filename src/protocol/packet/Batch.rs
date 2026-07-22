@@ -131,22 +131,13 @@ pub fn encode_batch(packets: &[GamePacket], compression_enabled: bool) -> Vec<u8
     result.push(ID_GAME_PACKET); // 0xFE
 
     if compression_enabled {
-        const COMPRESSION_THRESHOLD: usize = 256;
-        if inner.len() >= COMPRESSION_THRESHOLD {
-            // Compress with zlib deflate, algorithm = 0x00
-            result.push(COMPRESSION_ZLIB);
-            match compress_deflate(&inner) {
-                Ok(compressed) => result.extend_from_slice(&compressed),
-                Err(_) => {
-                    // Fallback: send uncompressed if compression fails
-                    result[1] = COMPRESSION_NONE;
-                    result.extend_from_slice(&inner);
-                }
+        result.push(COMPRESSION_ZLIB);
+        match compress_deflate(&inner) {
+            Ok(compressed) => result.extend_from_slice(&compressed),
+            Err(e) => {
+                log::error!("Failed to compress batch payload: {:?}", e);
+                result.extend_from_slice(&inner);
             }
-        } else {
-            // Below threshold: no compression, algorithm = 0xFF
-            result.push(COMPRESSION_NONE);
-            result.extend_from_slice(&inner);
         }
     } else {
         result.extend_from_slice(&inner);

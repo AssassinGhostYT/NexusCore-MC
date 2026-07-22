@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{BigEndian, WriteBytesExt};
 use crate::protocol::error::PResult;
 
 pub struct PlayStatus {
@@ -8,7 +8,7 @@ pub struct PlayStatus {
 impl PlayStatus {
     pub fn write(&self) -> PResult<Vec<u8>> {
         let mut buf = Vec::new();
-        buf.write_i32::<LittleEndian>(self.status).unwrap();
+        buf.write_i32::<BigEndian>(self.status).unwrap();
         Ok(buf)
     }
 }

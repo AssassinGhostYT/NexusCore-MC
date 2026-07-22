@@ -130,11 +130,11 @@ impl LevelSettings {
             rain_level: 0.0,
             lightning_level: 0.0,
             has_confirmed_platform_locked_content: false,
-            multiplayer_enabled: false,
-            lan_broadcasting_enabled: false,
+            multiplayer_enabled: true,
+            lan_broadcasting_enabled: true,
             xbox_live_broadcast_setting: 4, // Public
             platform_broadcast_setting: 4,  // Public
-            commands_enabled: false,
+            commands_enabled: true,
             texture_packs_required: false,
             rule_data: GameRuleLegacyData::new(),
             experiments: Experiments::new(),
