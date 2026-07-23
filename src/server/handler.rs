@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use crate::raknet::server::RakNetCommand;
-use crate::protocol::packet::*;
-use crate::protocol::types::*;
+use crate::network::mcpe::protocol::packets::*;
+use crate::network::mcpe::types::*;
 use super::client::ClientState;
 use super::packets;
 use crate::log_t;
@@ -18,7 +18,8 @@ pub async fn handle_packet(
 
     if let Some(ref mut crypto) = state.encryption_state {
         match crypto.decrypt_packet(&mut payload[1..]) {
-            Ok(decrypted_body) => {
+            Ok(body) => {
+                let decrypted_body: Vec<u8> = body;
                 payload.truncate(1);
                 payload.extend_from_slice(&decrypted_body);
             }

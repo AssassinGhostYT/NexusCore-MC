@@ -1,6 +1,5 @@
 pub mod client;
 pub mod handler;
-pub mod handlers;
 pub mod packets;
 
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
 // Helper functions to build outbound game packets
-use crate::protocol::packet::*;
-use crate::protocol::types::Attribute;
+use crate::network::mcpe::protocol::packets::*;
+use crate::network::mcpe::types::*;
 
 // Build SetPlayerGameType packet
 pub fn create_gametype_pkg(game_type: i32) -> GamePacket {

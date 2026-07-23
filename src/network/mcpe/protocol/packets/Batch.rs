@@ -3,8 +3,8 @@ use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use std::io::{Read, Write};
 
-use crate::protocol::error::{PacketError, PResult};
-use crate::protocol::varint::{read_varu32, write_varu32};
+use super::error::{PacketError, PResult};
+use super::varint::{read_varu32, write_varu32};
 
 pub struct GamePacket {
     pub id: u32,
@@ -133,7 +133,10 @@ pub fn encode_batch(packets: &[GamePacket], compression_enabled: bool) -> Vec<u8
     if compression_enabled {
         result.push(COMPRESSION_ZLIB);
         match compress_deflate(&inner) {
-            Ok(compressed) => result.extend_from_slice(&compressed),
+            Ok(body) => {
+                let compressed: Vec<u8> = body;
+                result.extend_from_slice(&compressed);
+            }
             Err(e) => {
                 log::error!("Failed to compress batch payload: {:?}", e);
                 result.extend_from_slice(&inner);

@@ -1,4 +1,4 @@
-#[path = "../../macros/helpers.rs"]
+#[path = "../../../../macros/helpers.rs"]
 pub mod helpers;
 #[path = "Batch.rs"]
 pub mod batch;
@@ -72,23 +72,27 @@ pub mod camera_spline;
 pub mod camera_presets;
 #[path = "CameraInstruction.rs"]
 pub mod camera_instruction;
-#[path = "LevelSettings.rs"]
+#[path = "../../types/LevelSettings.rs"]
 pub mod level_settings;
-#[path = "SyncedPlayerMovementSettings.rs"]
+#[path = "../../types/SyncedPlayerMovementSettings.rs"]
 pub mod synced_player_movement_settings;
-#[path = "NetworkPermissions.rs"]
+#[path = "../../types/NetworkPermissions.rs"]
 pub mod network_permissions;
 #[path = "ServerBoundLoadingScreen.rs"]
 pub mod server_bound_loading_screen;
 #[path = "ItemStackRequest.rs"]
 pub mod item_stack_request;
-#[path = "SpawnSettings.rs"]
+#[path = "../../types/SpawnSettings.rs"]
 pub mod spawn_settings;
-#[path = "GameRuleLegacy.rs"]
+#[path = "../../types/GameRuleLegacy.rs"]
 pub mod game_rule_legacy;
-#[path = "Experiments.rs"]
+#[path = "../../types/Experiments.rs"]
 pub mod experiments;
 
+pub use crate::protocol::varint;
+pub use crate::protocol::error;
+
+#[path = "../ProtocolInfo.rs"]
 pub mod ids;
 pub use ids::*;
 

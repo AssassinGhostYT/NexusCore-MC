@@ -1,4 +1,4 @@
-use crate::protocol::varint::{read_varu32, write_varu32};
+use crate::network::mcpe::protocol::packets::varint::{read_varu32, write_varu32};
 
 pub fn read_string(buf: &mut &[u8]) -> Option<String> {
     let len = read_varu32(buf)? as usize;

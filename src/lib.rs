@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 pub mod raknet;
+pub mod network;
 pub mod protocol;
 pub mod block;
 pub mod server;

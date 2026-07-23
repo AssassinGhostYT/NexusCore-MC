@@ -2,14 +2,13 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use crate::raknet::server::RakNetCommand;
 use crate::raknet::protocol::Reliability;
-use crate::protocol;
-use crate::protocol::packet::{GamePacket, encode_batch};
+use crate::network::mcpe::protocol::packets::{GamePacket, encode_batch};
 
 pub struct ClientState {
     pub username: String,
     pub uuid: [u8; 16],
     pub compression_enabled: bool,
-    pub encryption_state: Option<protocol::encryption::EncryptionState>,
+    pub encryption_state: Option<crate::protocol::encryption::EncryptionState>,
     pub last_chunk_x: Option<i32>,
     pub last_chunk_z: Option<i32>,
     pub loaded_chunks: std::collections::HashSet<(i32, i32)>,
