@@ -107,7 +107,7 @@ pub use resource_packs_info::ResourcePacksInfo;
 pub use resource_pack_stack::ResourcePackStack;
 pub use resource_pack_client_response::ResourcePackClientResponse;
 pub use start_game::StartGame;
-pub use level_chunk::{LevelChunk, make_flat_chunk_payload};
+pub use level_chunk::{LevelChunk, make_flat_chunk_payload, SUB_CHUNK_COUNT_LIMITLESS};
 pub use request_chunk_radius::RequestChunkRadius;
 pub use chunk_radius_updated::ChunkRadiusUpdated;
 pub use move_player::{MovePlayer, MovePlayerPosition};
