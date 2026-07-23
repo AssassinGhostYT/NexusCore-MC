@@ -46,8 +46,8 @@ pub mod set_player_game_type;
 pub mod update_abilities;
 #[path = "BlockPalette.rs"]
 pub mod block_palette;
-#[path = "CreativeContentPacket.rs"]
-pub mod creative_content_packet;
+#[path = "CreativeContent.rs"]
+pub mod creative_content;
 #[path = "AvailableCommands.rs"]
 pub mod available_commands;
 #[path = "InventoryTransaction.rs"]
@@ -124,7 +124,7 @@ pub use update_abilities::{UpdateAbilities, SerializedLayer};
 #[path = "UpdateAdventureSettings.rs"]
 pub mod update_adventure_settings;
 pub use update_adventure_settings::UpdateAdventureSettings;
-pub use creative_content_packet::CreativeContentPacket;
+pub use creative_content::CreativeContent;
 pub use available_commands::AvailableCommands;
 pub use inventory_transaction::InventoryTransaction;
 pub use container_open::ContainerOpen;

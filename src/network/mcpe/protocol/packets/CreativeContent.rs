@@ -10,11 +10,11 @@ use crate::item::creative;
 ///   2. [groups_count × CreativeGroupEntry]
 ///   3. VarU32  items_count
 ///   4. [items_count × CreativeItemEntry]
-pub struct CreativeContentPacket;
+pub struct CreativeContent;
 
-impl CreativeContentPacket {
+impl CreativeContent {
     pub fn new() -> Self {
-        CreativeContentPacket
+        CreativeContent
     }
 
     pub fn write(&self) -> Vec<u8> {

@@ -390,7 +390,7 @@ async fn handle_resource_pack_client_response(
                 id: ID_CREATIVE_CONTENT,
                 sender_subclient: 0,
                 recipient_subclient: 0,
-                payload: CreativeContentPacket::new().write(),
+                payload: CreativeContent::new().write(),
             };
 
             // Exact packet sequence matching PocketMine PreSpawnPacketHandler:
