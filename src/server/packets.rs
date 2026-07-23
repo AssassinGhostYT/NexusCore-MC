@@ -25,7 +25,6 @@ pub fn create_abilities_pkg(target_player_uid: i64) -> GamePacket {
             abilities_set: ABILITIES,
             ability_values: ABILITIES,
             fly_speed: 0.05,
-            vertical_fly_speed: 1.0,
             walk_speed: 0.1,
         }],
     }.write(&mut payload);
@@ -70,7 +69,7 @@ pub fn create_move_player_pkg(runtime_entity_id: u64, x: f32, y: f32, z: f32) ->
             runtime_entity_id,
             position: MovePlayerPosition { x, y, z },
             pitch: 0.0, yaw: 0.0, head_yaw: 0.0,
-            mode: 0, on_ground: true,
+            mode: 2, on_ground: true,
             ridden_entity_runtime_id: 0,
             teleport_cause: 0, source_actor_type: 0, tick: 0,
         }.write().unwrap(),
@@ -171,5 +170,41 @@ pub fn create_available_commands_pkg() -> GamePacket {
         sender_subclient: 0,
         recipient_subclient: 0,
         payload: AvailableCommands::new().write().unwrap(),
+    }
+}
+
+pub fn create_set_time_pkg(time: i32) -> GamePacket {
+    GamePacket {
+        id: ID_SET_TIME,
+        sender_subclient: 0,
+        recipient_subclient: 0,
+        payload: SetTime { time }.write().unwrap(),
+    }
+}
+
+pub fn create_set_difficulty_pkg(difficulty: u32) -> GamePacket {
+    GamePacket {
+        id: ID_SET_DIFFICULTY,
+        sender_subclient: 0,
+        recipient_subclient: 0,
+        payload: SetDifficulty { difficulty }.write().unwrap(),
+    }
+}
+
+pub fn create_crafting_data_pkg() -> GamePacket {
+    GamePacket {
+        id: ID_CRAFTING_DATA,
+        sender_subclient: 0,
+        recipient_subclient: 0,
+        payload: CraftingData { clear_recipes: true }.write().unwrap(),
+    }
+}
+
+pub fn create_set_commands_enabled_pkg(enabled: bool) -> GamePacket {
+    GamePacket {
+        id: ID_SET_COMMANDS_ENABLED,
+        sender_subclient: 0,
+        recipient_subclient: 0,
+        payload: SetCommandsEnabled { enabled }.write().unwrap(),
     }
 }

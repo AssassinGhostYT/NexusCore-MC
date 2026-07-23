@@ -82,50 +82,25 @@ pub async fn handle_packet(
                         if let Ok(init_packet) = SetLocalPlayerAsInitialized::read(&packet.payload) {
                             let rid = init_packet.entity_runtime_id;
                             log::info!(
-                                "[{}] Received SetLocalPlayerAsInitialised (ID 113) - Player Runtime ID: {} - PLAYER SPAWN COMPLETED!", 
+                                "[{}] Received SetLocalPlayerAsInitialised (ID 113) - Player Runtime ID: {} - PLAYER SPAWN COMPLETED FULLY!", 
                                 addr, 
                                 rid
                             );
-
-                            if !state.world_data_sent {
-                                state.world_data_sent = true;
-                                
-                                let gametype_pkg = packets::create_gametype_pkg(1); // Creative = 1
-                                let abilities_pkg = packets::create_abilities_pkg(rid as i64);
-                                let adventure_pkg = packets::create_adventure_pkg();
-
-                                let mut spawn_batch = vec![gametype_pkg, abilities_pkg, adventure_pkg];
-                                let inv_setup_pkgs = packets::get_inventory_setup_packets();
-                                spawn_batch.extend(inv_setup_pkgs);
-
-                                let teleport_pkg = packets::create_move_player_pkg(rid, 0.5, -58.38, 0.5);
-                                spawn_batch.push(teleport_pkg);
-
-                                let identity = vec![
-                                    packets::create_update_attributes_pkg(rid),
-                                    packets::create_set_actor_data_pkg(rid),
-                                ];
-                                spawn_batch.extend(identity);
-
-                                let commands_pkg = packets::create_available_commands_pkg();
-                                spawn_batch.push(commands_pkg);
-
-                                let stop_waiting_pkg = packets::create_level_event_pkg(14, 0);
-                                spawn_batch.push(stop_waiting_pkg);
-
-                                state.send_packets(addr, cmd_tx, &spawn_batch).await?;
-                                log::info!("[{}] Player active state synchronized on SetLocalPlayerAsInitialised!", addr);
-                            }
                         }
                     }
                     ID_SERVER_BOUND_LOADING_SCREEN => {
                         if let Ok(loading) = ServerBoundLoadingScreen::read(&packet.payload) {
                             log::info!(
-                                "[{}] Received ServerBoundLoadingScreen: event_type={}, screen_id={:?}",
+                                "[{}] Received ServerBoundLoadingScreen: type={:?}, screen_id={:?} — SilentDiscard",
                                 addr,
-                                loading.event_type,
+                                loading.loading_screen_type,
                                 loading.screen_id
                             );
+                            // SilentDiscard per PocketMine PreSpawnPacketHandler / SpawnResponsePacketHandler.
+                            // The client sends:
+                            //   1) StartLoadingScreen (type=1) — server ignores
+                            //   2) StopLoadingScreen  (type=2) — server ignores
+                            //   3) SetLocalPlayerAsInitialized (ID 113) — server transitions to in-game
                         }
                     }
                     ID_ITEM_STACK_REQUEST => {
@@ -332,28 +307,18 @@ async fn handle_resource_pack_client_response(
             state.send_packets(addr, cmd_tx, &[stack_pkg]).await?;
         }
         if resp.response_status == 0 || resp.response_status == 4 {
-            let jigsaw_pkg = GamePacket {
-                id: ID_JIGSAW_STRUCTURE_DATA,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: JigsawStructureData::new().write()?,
-            };
+            let rid = 1u64;
 
-            let voxel_pkg = GamePacket {
-                id: ID_VOXEL_SHAPES,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: VoxelShapes::new().write()?,
-            };
-
+            // StartGame — player spawns at y=64 (all-air world, safe floating position)
             let mut start_game = StartGame::new();
             start_game.entity_id = 1;
             start_game.runtime_entity_id = 1;
-            start_game.player_gamemode = 1;
-            start_game.player_position = (0.5, -58.38, 0.5);
+            start_game.player_gamemode = 1; // creative
+            start_game.player_position = (0.5, 64.0, 0.5);
             start_game.pitch = 0.0;
             start_game.yaw = 0.0;
-            start_game.level_name = "Flat World".to_string();
+            start_game.level_name = "NexusCore".to_string();
+            start_game.settings.game_type = 1; // creative
 
             let start_game_pkg = GamePacket {
                 id: ID_START_GAME,
@@ -383,13 +348,84 @@ async fn handle_resource_pack_client_response(
                 payload: player_list.write()?,
             };
 
-            state.send_packets(addr, cmd_tx, &[
-                jigsaw_pkg,
-                voxel_pkg,
-                start_game_pkg,
-                item_registry_pkg,
-                player_list_pkg,
-            ]).await?;
+            let play_status_ok_pkg = GamePacket {
+                id: ID_PLAY_STATUS,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: PlayStatus { status: 0 }.write()?,
+            };
+
+            // Packet order matches PocketMine's pre-spawn sequence exactly.
+            // Removed: JigsawStructureData, VoxelShapes, SetPlayerGameType,
+            //          SetTime, SetDifficulty, SetCommandsEnabled, MovePlayer-teleport.
+            let abilities_pkg  = packets::create_abilities_pkg(rid as i64);
+            let adventure_pkg  = packets::create_adventure_pkg();
+            let attr_pkg       = packets::create_update_attributes_pkg(rid);
+            let actor_data_pkg = packets::create_set_actor_data_pkg(rid);
+            let commands_pkg   = packets::create_available_commands_pkg();
+            let crafting_pkg   = packets::create_crafting_data_pkg();
+
+            let biome_pkg = GamePacket {
+                id: ID_BIOME_DEFINITION_LIST,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: general_purpose::STANDARD.decode(BIOMES_BASE64).unwrap(),
+            };
+
+            let actor_id_payload = vec![
+                0x0a, 0x00, 0x09, 0x06, 0x00, b'i', b'd', b'l', b'i', b's', b't',
+                0x0a, 0x01, 0x00, 0x00, 0x00, 0x08, 0x02, 0x00, b'i', b'd',
+                0x10, 0x00, b'm', b'i', b'n', b'e', b'c', b'r', b'a', b'f', b't', b':', b'p', b'l', b'a', b'y', b'e', b'r',
+                0x00, 0x00,
+            ];
+            let actor_id_pkg = GamePacket {
+                id: ID_AVAILABLE_ACTOR_IDENTIFIERS,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: actor_id_payload,
+            };
+
+            let creative_pkg = GamePacket {
+                id: ID_CREATIVE_CONTENT,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: CreativeContent::new().write(),
+            };
+
+            // Exact packet sequence matching PocketMine PreSpawnPacketHandler:
+            // 1. StartGame
+            // 2. ItemRegistry
+            // 3. AvailableActorIdentifiers
+            // 4. BiomeDefinitionList
+            // 5. UpdateAttributes
+            // 6. AvailableCommands
+            // 7. UpdateAbilities + UpdateAdventureSettings
+            // 8. SetActorData
+            // 9. InventoryContent (via inv_setup_pkgs)
+            // 10. CreativeContent
+            // 11. CraftingData
+            // 12. PlayerList
+            let mut status_4_batch = vec![
+                start_game_pkg,        // StartGame
+                item_registry_pkg,     // ItemRegistry (sent right after StartGame in PocketMine)
+                actor_id_pkg,          // AvailableActorIdentifiers
+                biome_pkg,             // BiomeDefinitionList
+                attr_pkg,              // UpdateAttributes
+                commands_pkg,          // AvailableCommands
+                abilities_pkg,         // UpdateAbilities
+                adventure_pkg,         // UpdateAdventureSettings
+                actor_data_pkg,        // SetActorData
+            ];
+
+            let inv_setup_pkgs = packets::get_inventory_setup_packets();
+            status_4_batch.extend(inv_setup_pkgs);
+
+            status_4_batch.push(creative_pkg); // CreativeContent (sent after inventory in PocketMine)
+            status_4_batch.push(crafting_pkg); // CraftingData
+            status_4_batch.push(player_list_pkg); // PlayerList
+
+            state.send_packets(addr, cmd_tx, &status_4_batch).await?;
+            log::info!("[{}] Sent PlayStatus(0) LoginSuccess + full pre-spawn batch!", addr);
         }
     } else {
         log::warn!("Failed to parse ResourcePackClientResponse payload");
@@ -457,7 +493,7 @@ async fn maybe_update_chunks(
                 let chunk_payload_written = LevelChunk {
                     chunk_x,
                     chunk_z,
-                    sub_chunk_count: 24,
+                    sub_chunk_count: 0,   // PocketMine: 0 for all-air
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
@@ -467,14 +503,16 @@ async fn maybe_update_chunks(
                     payload: chunk_payload_written,
                 };
                 new_chunk_pkgs.push(chunk_pkg);
-                if new_chunk_pkgs.len() >= 16 {
+                if new_chunk_pkgs.len() >= 4 {
                     state.send_packets(addr, cmd_tx, &new_chunk_pkgs).await?;
                     new_chunk_pkgs.clear();
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             }
         }
         if !new_chunk_pkgs.is_empty() {
             state.send_packets(addr, cmd_tx, &new_chunk_pkgs).await?;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
     Ok(())
@@ -535,67 +573,12 @@ async fn handle_request_chunk_radius(
         state.send_packets(addr, cmd_tx, &[radius_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // 2. Biomes + Creative + Actors + Abilities + Commands
-        let biomes_base64 = BIOMES_BASE64;
-        let uncompressed_biome_payload = general_purpose::STANDARD.decode(biomes_base64).unwrap();
-        
-        let biome_pkg = GamePacket {
-            id: ID_BIOME_DEFINITION_LIST,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: uncompressed_biome_payload,
-        };
-        
-        let creative_payload = vec![0x00];
-        let creative_pkg = GamePacket {
-            id: ID_CREATIVE_CONTENT,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: creative_payload,
-        };
-
-        let actor_id_payload = vec![
-            0x0a, // Root TAG_Compound
-            0x00, // Root name len (0)
-            
-            0x09, // TAG_List
-            0x06, 0x00, // Name len = 6 (u16 LE)
-            b'i', b'd', b'l', b'i', b's', b't', // "idlist"
-            
-            0x0a, // Element type = TAG_Compound
-            0x01, 0x00, 0x00, 0x00, // Count = 1 (i32 LE)
-            
-            // Element 0:
-            0x08, // TAG_String
-            0x02, 0x00, // Name len = 2 (u16 LE)
-            b'i', b'd', // "id"
-            0x10, 0x00, // Value len = 16 (u16 LE)
-            b'm', b'i', b'n', b'e', b'c', b'r', b'a', b'f', b't', b':', b'p', b'l', b'a', b'y', b'e', b'r',
-            
-            0x00, // TAG_End for Element 0
-            0x00, // TAG_End for Root
-        ]; 
-        let actor_id_pkg = GamePacket {
-            id: ID_AVAILABLE_ACTOR_IDENTIFIERS,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: actor_id_payload,
-        };
-
-        state.send_packets(addr, cmd_tx, &[biome_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        state.send_packets(addr, cmd_tx, &[creative_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        state.send_packets(addr, cmd_tx, &[actor_id_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
         state.last_chunk_x = Some(0);
         state.last_chunk_z = Some(0);
 
         let chunk_payload = make_flat_chunk_payload();
         let mut built_chunks = Vec::new();
+        let radius = (req.chunk_radius as u32).min(3);
         let r = radius as i32;
         let mut chunk_pkgs = Vec::new();
         for dx in -r..=r {
@@ -606,7 +589,7 @@ async fn handle_request_chunk_radius(
                 let chunk_payload_written = LevelChunk {
                     chunk_x: dx,
                     chunk_z: dz,
-                    sub_chunk_count: 24,
+                    sub_chunk_count: 24,  // Full 24 sub-chunks height
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
@@ -630,7 +613,7 @@ async fn handle_request_chunk_radius(
         // 4. NetworkChunkPublisherUpdate
         log::info!("[{}] Sending NetworkChunkPublisherUpdate...", addr);
         let publisher_payload = NetworkChunkPublisherUpdate {
-            position: BlockPos { x: 0, y: -60, z: 0 },
+            position: BlockPos { x: 0, y: 64, z: 0 },
             radius: (radius as u32) << 4,
             server_built_chunks: Vec::new(),
         }.write()?;
@@ -643,16 +626,20 @@ async fn handle_request_chunk_radius(
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // Send PlayStatus(3) PlayerSpawn after chunks to prompt client for SetLocalPlayerAsInitialised
-        let spawn_payload = PlayStatus { status: 3 }.write()?;
-        let spawn_pkg = GamePacket {
-            id: ID_PLAY_STATUS,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: spawn_payload,
-        };
-        state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
-        log::info!("[{}] Sent PlayStatus(3) PlayerSpawn after chunks!", addr);
+        if !state.world_data_sent {
+            state.world_data_sent = true;
+
+            let spawn_payload = PlayStatus { status: 3 }.write()?;
+            let spawn_pkg = GamePacket {
+                id: ID_PLAY_STATUS,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: spawn_payload,
+            };
+
+            state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
+            log::info!("[{}] Sent PlayStatus(3) PlayerSpawn after chunks!", addr);
+        }
     }
     Ok(())
 }
