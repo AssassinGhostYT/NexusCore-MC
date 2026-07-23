@@ -14,7 +14,13 @@ impl CreativeContent {
     pub fn write(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
-        // Items slice count as VarU32
+        // 1. Groups count as VarU32 — MUST come before items.
+        // The client reads this first; omitting it causes it to read the items
+        // count as the groups count and deserync the entire packet.
+        // We send 0 groups (no creative categories/tabs).
+        write_varu32(&mut buf, 0);
+
+        // 2. Items count as VarU32
         let creative_items = creative::items();
         write_varu32(&mut buf, creative_items.len() as u32);
         
