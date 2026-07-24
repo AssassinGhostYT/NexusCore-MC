@@ -13,13 +13,11 @@ pub struct LevelChunk {
 
 impl LevelChunk {
     pub fn write(&self) -> PResult<Vec<u8>> {
-        use byteorder::{LittleEndian, WriteBytesExt};
         let mut buf = Vec::new();
         write_vari32(&mut buf, self.chunk_x);        // chunk_x  (ZigZag VarI32)
         write_vari32(&mut buf, self.chunk_z);        // chunk_z  (ZigZag VarI32)
         write_vari32(&mut buf, 0);                   // dimension_id = 0 (Overworld)
         write_varu32(&mut buf, self.sub_chunk_count);// sub_chunk_count (plain VarU32)
-        buf.write_u16::<LittleEndian>(24).unwrap();  // sub_chunk_limit = 24 (u16 LE)
         buf.push(0);                                 // cache_enabled = false
         helpers::write_bytes(&mut buf, &self.payload);// serialized_chunk_data (VarU32 len + bytes)
         Ok(buf)
