@@ -494,7 +494,7 @@ async fn maybe_update_chunks(
                 let chunk_payload_written = LevelChunk {
                     chunk_x,
                     chunk_z,
-                    sub_chunk_count: SUB_CHUNK_COUNT_LIMITLESS,
+                    sub_chunk_count: 24,
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
@@ -590,7 +590,7 @@ async fn handle_request_chunk_radius(
                 let chunk_payload_written = LevelChunk {
                     chunk_x: dx,
                     chunk_z: dz,
-                    sub_chunk_count: SUB_CHUNK_COUNT_LIMITLESS,
+                    sub_chunk_count: 24,
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
