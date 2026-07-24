@@ -74,9 +74,17 @@ pub async fn handle_packet(
                     }
                     ID_PACKET_VIOLATION_WARNING => {
                         let hex: Vec<String> = packet.payload.iter().map(|b| format!("{:02x}", b)).collect();
-                        log::error!("[{}] PACKET VIOLATION WARNING RECEIVED! Raw hex=[{}]", addr, hex.join(" "));
-                        if let Ok(violation) = PacketViolationWarning::read(&packet.payload) {
-                            log::error!("[{}] Violation details: packet_id={}, severity={}, context='{}'", addr, violation.packet_id, violation.severity, violation.context);
+                        log::error!("[{}] 🚨 PACKET VIOLATION WARNING RECEIVED FROM CLIENT! Raw hex=[{}]", addr, hex.join(" "));
+                        match PacketViolationWarning::read(&packet.payload) {
+                            Ok(violation) => {
+                                log::error!(
+                                    "[{}] 🚨 VIOLATION DETAILS: packet_id={} (0x{:02x}), severity={}, context='{}'",
+                                    addr, violation.packet_id, violation.packet_id, violation.severity, violation.context
+                                );
+                            }
+                            Err(err) => {
+                                log::error!("[{}] 🚨 Failed to parse PacketViolationWarning body: {:?}", addr, err);
+                            }
                         }
                     }
                     ID_SET_LOCAL_PLAYER_AS_INITIALISED => {
