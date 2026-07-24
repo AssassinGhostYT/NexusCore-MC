@@ -624,7 +624,7 @@ async fn handle_request_chunk_radius(
         let publisher_payload = NetworkChunkPublisherUpdate {
             position: BlockPos { x: 0, y: 64, z: 0 },
             radius: (radius as u32) << 4,
-            server_built_chunks: Vec::new(),
+            server_built_chunks: built_chunks,
         }.write()?;
         let publisher_pkg = GamePacket {
             id: ID_NETWORK_CHUNK_PUBLISHER_UPDATE,
