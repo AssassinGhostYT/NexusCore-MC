@@ -570,87 +570,96 @@ async fn handle_request_chunk_radius(
         state.chunk_radius = radius as u32;
         log::info!("[{}] handle_request_chunk_radius: received RequestChunkRadius, client requests radius {}", addr, radius);
 
-        // 1. ChunkRadiusUpdated
+        // ── Step 1: ChunkRadiusUpdated ─────────────────────────────────────
         log::info!("[{}] Sending ChunkRadiusUpdated (radius={})...", addr, radius);
-        let radius_payload = ChunkRadiusUpdated { radius }.write()?;
         let radius_pkg = GamePacket {
             id: ID_CHUNK_RADIUS_UPDATED,
             sender_subclient: 0,
             recipient_subclient: 0,
-            payload: radius_payload,
+            payload: ChunkRadiusUpdated { radius }.write()?,
         };
         state.send_packets(addr, cmd_tx, &[radius_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
+        // ── Step 2: BiomeDefinitionList ────────────────────────────────────
+        // GopherTunnel sends this right after ChunkRadiusUpdated, before PlayStatus.
+        let biome_pkg = GamePacket {
+            id: ID_BIOME_DEFINITION_LIST,
+            sender_subclient: 0,
+            recipient_subclient: 0,
+            payload: BiomeDefinitionList::empty().write()?,
+        };
+        state.send_packets(addr, cmd_tx, &[biome_pkg]).await?;
+
+        // ── Step 3: PlayStatus(PlayerSpawn) ───────────────────────────────
+        // GopherTunnel sends PlayStatus BEFORE chunks.
+        if !state.world_data_sent {
+            state.world_data_sent = true;
+            let spawn_pkg = GamePacket {
+                id: ID_PLAY_STATUS,
+                sender_subclient: 0,
+                recipient_subclient: 0,
+                payload: PlayStatus { status: 3 }.write()?,
+            };
+            state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
+            log::info!("[{}] Sent PlayStatus(3) PlayerSpawn!", addr);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // ── Step 4: LevelChunks ────────────────────────────────────────────
         state.last_chunk_x = Some(0);
         state.last_chunk_z = Some(0);
 
         let chunk_payload = make_flat_chunk_payload();
         let mut built_chunks = Vec::new();
-        let radius = (req.chunk_radius as u32).min(3);
-        let r = radius as i32;
+        let r = (radius as i32).min(3);
         let mut chunk_pkgs = Vec::new();
         for dx in -r..=r {
             for dz in -r..=r {
                 state.loaded_chunks.insert((dx, dz));
                 built_chunks.push(ChunkPos { x: dx, z: dz });
 
-                let chunk_payload_written = LevelChunk {
-                    chunk_x: dx,
-                    chunk_z: dz,
-                    sub_chunk_count: 24,
-                    payload: chunk_payload.clone(),
-                }.write()?;
                 let chunk_pkg = GamePacket {
                     id: ID_LEVEL_CHUNK,
                     sender_subclient: 0,
                     recipient_subclient: 0,
-                    payload: chunk_payload_written,
+                    payload: LevelChunk {
+                        chunk_x: dx,
+                        chunk_z: dz,
+                        sub_chunk_count: 24,
+                        payload: chunk_payload.clone(),
+                    }.write()?,
                 };
                 chunk_pkgs.push(chunk_pkg);
                 if chunk_pkgs.len() >= 16 {
                     state.send_packets(addr, cmd_tx, &chunk_pkgs).await?;
                     chunk_pkgs.clear();
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             }
         }
         if !chunk_pkgs.is_empty() {
             state.send_packets(addr, cmd_tx, &chunk_pkgs).await?;
         }
+        log::info!("[{}] Sent {} chunks.", addr, built_chunks.len());
 
-        // 4. NetworkChunkPublisherUpdate
+        // ── Step 5: NetworkChunkPublisherUpdate ────────────────────────────
         log::info!("[{}] Sending NetworkChunkPublisherUpdate...", addr);
-        let publisher_payload = NetworkChunkPublisherUpdate {
-            position: BlockPos { x: 0, y: 64, z: 0 },
-            radius: (radius as u32) << 4,
-            server_built_chunks: built_chunks,
-        }.write()?;
         let publisher_pkg = GamePacket {
             id: ID_NETWORK_CHUNK_PUBLISHER_UPDATE,
             sender_subclient: 0,
             recipient_subclient: 0,
-            payload: publisher_payload,
+            payload: NetworkChunkPublisherUpdate {
+                position: BlockPos { x: 0, y: 64, z: 0 },
+                radius: (r as u32) << 4,
+                server_built_chunks: built_chunks,
+            }.write()?,
         };
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        if !state.world_data_sent {
-            state.world_data_sent = true;
-
-            let spawn_payload = PlayStatus { status: 3 }.write()?;
-            let spawn_pkg = GamePacket {
-                id: ID_PLAY_STATUS,
-                sender_subclient: 0,
-                recipient_subclient: 0,
-                payload: spawn_payload,
-            };
-
-            state.send_packets(addr, cmd_tx, &[spawn_pkg]).await?;
-            log::info!("[{}] Sent PlayStatus(3) PlayerSpawn after chunks!", addr);
-        }
     }
     Ok(())
 }
+
+
 
 pub const BIOMES_BASE64: &str = "CgAKDWJhbWJvb19qdW5nbGUFCGRvd25mYWxsZmZmPwULdGVtcGVyYXR1cmUzM3M/AAoTYmFtYm9vX2p1bmdsZV9oaWxscwUIZG93bmZhbGZmZmY/BQt0ZW1wZXJhdHVyZTMzcz8ACgViZWFjaAUIZG93bmZhbGzNzMw+BQt0ZW1wZXJhdHVyZc3MTD8ACgxiaXJjaF9mb3Jlc3QFCGRvd25mYWxsmpkZPwULdGVtcGVyYXR1cmWamRk/AAoSYmlyY2hfZm9yZXN0X2hpbGxzBQhkb3duZmFsbJqZGT8FC3RlbXBlcmF0dXJlmpkZPwAKGmJpcmNoX2ZvcmVzdF9oaWxsc19tdXRhdGVkBQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlMzMzPwAKFGJpcmNoX2ZvcmVzdF9tdXRhdGVkBQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlMzMzPwAKCmNvbGRfYmVhY2gFCGRvd25mYWxsmpmZPgULdGVtcGVyYXR1cmXNzEw9AAoKY29sZF9vY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAD8ACgpjb2xkX3RhaWdhBQhkb3duZmFsbM3MzD4FC3RlbXBlcmF0dXJlAAAAvwAKEGNvbGRfdGFpZ2FfaGlsbHMFCGRvd25mYWxszczMPgULdGVtcGVyYXR1cmUAAAC/AAoSY29sZF90YWlnYV9tdXRhdGVkBQhkb3duZmFsbM3MzD4FC3RlbXBlcmF0dXJlAAAAvwAKD2RlZXBfY29sZF9vY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAD8AChFkZWVwX2Zyb3plbl9vY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAAAAChNkZWVwX2x1a2V3YXJtX29jZWFuBQhkb3duZmFsbAAAAD8FC3RlbXBlcmF0dXJlAAAAPwAKCmRlZXBfb2NlYW4FCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmUAAAA/AAoPZGVlcF93YXJtX29jZWFuBQhkb3duZmFsbAAAAD8FC3RlbXBlcmF0dXJlAAAAPwAKBmRlc2VydAUIZG93bmZhbGwAAAAABQt0ZW1wZXJhdHVyZQAAAEAACgxkZXNlcnRfaGlsbHMFCGRvd25mYWxsAAAAAAULdGVtcGVyYXR1cmUAAABAAAoOZGVzZXJ0X211dGF0ZWQFCGRvd25mYWxsAAAAAAULdGVtcGVyYXR1cmUAAABAAAoNZXh0cmVtZV9oaWxscwUIZG93bmZhbGyamZk+BQt0ZW1wZXJhdHVyZc3MTD4AChJleHRyZW1lX2hpbGxzX2VkZ2UFCGRvd25mYWxsmpmZPgULdGVtcGVyYXR1cmXNzEw+AAoVZXh0cmVtZV9oaWxsc19tdXRhdGVkBQhkb3duZmFsbJqZmT4FC3RlbXBlcmF0dXJlzcxMPgAKGGV4dHJlbWVfaGlsbHNfcGx1c190cmVlcwUIZG93bmZhbGyamZk+BQt0ZW1wZXJhdHVyZc3MTD4ACiBleHRyZW1lX2hpbGxzX3BsdXNfdHJlZXNfbXV0YXRlZAUIZG93bmZhbGyamZk+BQt0ZW1wZXJhdHVyZc3MTD4ACg1mbG93ZXJfZm9yZXN0BQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlMzMzPwAKBmZvcmVzdAUIZG93bmZhbGzNzEw/BQt0ZW1wZXJhdHVyZTMzMz8ACgxmb3Jlc3RfaGlsbHMFCGRvd25mYWxszcxMPwULdGVtcGVyYXR1cmUzMzM/AAoMZnJvemVuX29jZWFuBQhkb3duZmFsbAAAAD8FC3RlbXBlcmF0dXJlAAAAAAAKDGZyb3plbl9yaXZlcgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAAAACgRoZWxsBQhkb3duZmFsbAAAAAAFC3RlbXBlcmF0dXJlAAAAQAAKDWljZV9tb3VudGFpbnMFCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmUAAAAAAAoKaWNlX3BsYWlucwUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAAAAChFpY2VfcGxhaW5zX3NwaWtlcwUIZG93bmZhbGwAAIA/BQt0ZW1wZXJhdHVyZQAAAAAACgZqdW5nbGUFCGRvd25mYWxsZmZmPwULdGVtcGVyYXR1cmUzM3M/AAoLanVuZ2xlX2VkZ2UFCGRvd25mYWxszcxMPwULdGVtcGVyYXR1cmUzM3M/AAoTanVuZ2xlX2VkZ2UFBGlkZmZmMzM/AAoTbGVnYWN5X2Zyb3plbl9vY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAAAACg5sdWtld2FybV9vY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAD8ACgptZWdhX3RhaWdhBQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlmpmZPgAKEG1lZ2FfdGFpZ2FfaGlsbHMFCGRvd25mYWxszcxMPwULdGVtcGVyYXR1cmWamZk+AAoEbWVzYQUIZG93bmZhbGwAAAAABQt0ZW1wZXJhdHVyZQAAAEAACgptZXNhX2JyeWNlBQhkb3duZmFsbAAAAAAFC3RlbXBlcmF0dXJlAAAAQAAKDG1lc2FfcGxhdGVhdQUIZG93bmZhbGwAAAAABQt0ZW1wZXJhdHVyZQAAAEAAChRtZXNhX3BsYXRlYXVfbXV0YXRlZAUIZG93bmZhbGwAAAAABQt0ZW1wZXJhdHVyZQAAAEAAChJtZXNhX3BsYXRlYXVfc3RvbmUFCGRvd25mYWxsAAAAAAULdGVtcGVyYXR1cmUAAABAAAoabWVzYV9wbGF0ZWF1X3N0b25lX211dGF0ZWQFCGRvd25mYWxsAAAAAAULdGVtcGVyYXR1cmUAAABAAAoPbXVzaHJvb21faXNsYW5kBQhkb3duZmFsbAAAgD8FC3RlbXBlcmF0dXJlZmZmPwAKFW11c2hyb29tX2lzbGFuZF9zaG9yZQUIZG93bmZhbGwAAIA/BQt0ZW1wZXJhdHVyZWZmZj8ACgVvY2VhbgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAD8ACgZwbGFpbnMFCGRvd25mYWxszczMPgULdGVtcGVyYXR1cmXNzEw/AAobcmVkd29vZF90YWlnYV9oaWxsc19tdXRhdGVkBQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlmpmZPgAKFXJlZHdvb2RfdGFpZ2FfbXV0YXRlZAUIZG93bmZhbGzNzEw/BQt0ZW1wZXJhdHVyZQAAgD4ACgVyaXZlcgUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZQAAAD8ACg1yb29mZWRfZm9yZXN0BQhkb3duZmFsbM3MTD8FC3RlbXBlcmF0dXJlMzMzPwAKFXJvb2ZlZF9mb3Jlc3RfbXV0YXRlZAUIZG93bmZhbGzNzEw/BQt0ZW1wZXJhdHVyZTMzMz8ACgdzYXZhbm5hBQhkb3duZmFsbAAAAAAFC3RlbXBlcmF0dXJlmpmZPwAKD3NhdmFubmFfbXV0YXRlZAUIZG93bmZhbGwAAAA/BQt0ZW1wZXJhdHVyZc3MjD8ACg9zYXZhbm5hX3BsYXRlYXUFCGRvd25mYWxsAAAAAAULdGVtcGVyYXR1cmUAAIA/AAoXc2F2YW5uYV9wbGF0ZWF1X211dGF0ZWQFCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmUAAIA/AAoLc3RvbmVfYmVhY2gFCGRvd25mYWxsmpmZPgULdGVtcGVyYXR1cmXNzEw+AAoQc3VuZmxvd2VyX3BsYWlucwUIZG93bmZhbGzNzMw+BQt0ZW1wZXJhdHVyZc3MTD8ACglzd2FtcGxhbmQFCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmXNzEw/AAoRc3dhbXBsYW5kX211dGF0ZWQFCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmXNzEw/AAoFdGFpZ2EFCGRvd25mYWxszcxMPwULdGVtcGVyYXR1cmUAAIA+AAoLdGFpZ2FfaGlsbHMFCGRvd25mYWxszcxMPwULdGVtcGVyYXR1cmUAAIA+AAoNdGFpZ2FfbXV0YXRlZAUIZG93bmZhbGzNzEw/BQt0ZW1wZXJhdHVyZQAAgD4ACgd0aGVfZW5kBQhkb3duZmFsbAAAAD8FC3RlbXBlcmF0dXJlAAAAPwAKCndhcm1fb2NlYW4FCGRvd25mYWxsAAAAPwULdGVtcGVyYXR1cmUAAAA/AAA=";

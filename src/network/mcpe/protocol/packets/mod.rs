@@ -116,6 +116,10 @@ pub use server_to_client_handshake::ServerToClientHandshake;
 pub use client_to_server_handshake::ClientToServerHandshake;
 pub use item_registry::ItemRegistry;
 pub use network_chunk_publisher_update::NetworkChunkPublisherUpdate;
+
+#[path = "BiomeDefinitionList.rs"]
+pub mod biome_definition_list;
+pub use biome_definition_list::BiomeDefinitionList;
 pub use available_actor_identifiers::AvailableActorIdentifiers;
 pub use voxel_shapes::VoxelShapes;
 pub use set_player_game_type::SetPlayerGameType;
