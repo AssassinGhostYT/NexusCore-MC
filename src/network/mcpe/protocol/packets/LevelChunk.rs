@@ -2,12 +2,23 @@ use crate::protocol::error::PResult;
 use crate::protocol::varint::{write_varu32, write_vari32};
 use crate::macros::helpers;
 
+/// SubChunkRequestModeLimited: client sends SubChunkRequest packets.
+/// With HighestSubChunk=0, client knows all sub-chunks are air and doesn't request them.
+/// This is what Dragonfly uses for Bedrock 1.18+.
+pub const SUB_CHUNK_REQUEST_MODE_LIMITED: u32 = u32::MAX - 1;   // 0xFFFFFFFE
+
 pub struct LevelChunk {
     pub chunk_x: i32,
     pub chunk_z: i32,
-    /// Number of sub-chunks in the payload (use the real count, e.g. 24).
+    /// Set to SUB_CHUNK_REQUEST_MODE_LIMITED for the LIMITED mode (Dragonfly default for 1.18+).
+    /// Set to actual count (e.g. 24) for the legacy inline mode.
     pub sub_chunk_count: u32,
-    /// Raw serialized chunk data (sub-chunks + biomes + border blocks).
+    /// Only used when sub_chunk_count == SUB_CHUNK_REQUEST_MODE_LIMITED.
+    /// HighestSubChunk=0 means no filled sub-chunks (all air).
+    pub highest_sub_chunk: u16,
+    /// Raw serialized chunk data.
+    /// In LIMITED mode: biomes + border block byte (26 bytes for all-plains).
+    /// In legacy mode:  sub-chunks + biomes + border block bytes.
     pub payload: Vec<u8>,
 }
 
@@ -17,65 +28,53 @@ impl LevelChunk {
         write_vari32(&mut buf, self.chunk_x);         // chunk_x  (ZigZag VarI32)
         write_vari32(&mut buf, self.chunk_z);         // chunk_z  (ZigZag VarI32)
         write_vari32(&mut buf, 0);                    // dimension_id = 0 (Overworld)
-        write_varu32(&mut buf, self.sub_chunk_count); // sub_chunk_count (plain VarU32)
+        write_varu32(&mut buf, self.sub_chunk_count); // sub_chunk_count (VarU32)
+
+        // Only in LIMITED mode: write HighestSubChunk as u16 LE
+        if self.sub_chunk_count == SUB_CHUNK_REQUEST_MODE_LIMITED {
+            buf.extend_from_slice(&self.highest_sub_chunk.to_le_bytes());
+        }
+
         buf.push(0);                                  // cache_enabled = false
         helpers::write_bytes(&mut buf, &self.payload);// serialized_chunk_data (VarU32 len + bytes)
         Ok(buf)
     }
 }
 
-/// Build an all-air chunk payload following Chorus/bedrock-rs network encoding exactly.
+/// Build a LIMITED-mode chunk payload (biomes only, no inline sub-chunks).
 ///
-/// Reference: /root/Chorus/src/level/sub_chunk.rs  (Palette::serialize + SubChunk::serialize_network)
-///            /root/Chorus/src/level/chunk.rs       (Chunk::serialize)
+/// Reference: Dragonfly server/session/chunk.go sendNetworkChunk (subChunkRequests=true):
+///   s.writePacket(&packet.LevelChunk{
+///       SubChunkCount:   protocol.SubChunkRequestModeLimited,
+///       HighestSubChunk: c.HighestFilledSubChunk(),  // 0 for all-air
+///       RawPayload:      append(chunk.EncodeBiomes(c, chunk.NetworkEncoding), 0),
+///   })
 ///
-/// Per sub-chunk (version 9 Limitless, 2 block layers):
-///   [u8  version  = 9]
-///   [u8  layers   = 2]          ← TWO layers: block + waterlog layer
-///   [u8  sub_y    ]             ← sub-chunk Y index (i8 as u8)
-///   -- Layer 1 (blocks) --
-///   [u8  header   = 0x01]       ← (bits=0 << 1) | 1 = single-value, network palette
-///   [VarI32 air_id = 0]         ← ZigZag(0) = 0x00  (no count when bits=0)
-///   -- Layer 2 (waterlog/liquid) --
-///   [u8  header   = 0x01]
-///   [VarI32 air_id = 0]         ← 0x00
+/// Biome wire layout (Dragonfly networkEncoding, 24 sections):
+///   First section:
+///     [u8 header = 0x01]       ← (bits=0 << 1) | network=1 = single-value palette
+///     [VarI32 biome_id = 1]    ← ZigZag(1) = 2 = 0x02  (plains)
+///   Sections 2-24 (same as previous):
+///     [u8 = 0xFF]              ← (0x7F << 1) | 1 = "same as previous" marker
+///   Footer:
+///     [u8 = 0]                 ← border_block_count
 ///
-/// Biomes (one entry per sub-chunk, written AFTER all sub-chunks):
-///   [u8  header   = 0x01]       ← single-value, network palette
-///   [VarI32 biome_id = 1]       ← ZigZag(1) = 0x02  (plains)
-///
-/// Footer:
-///   [u8  = 0]                   ← border_block_count
-pub fn make_flat_chunk_payload() -> Vec<u8> {
+/// Total: 2 + 23 + 1 = 26 bytes.
+pub fn make_limited_chunk_payload() -> Vec<u8> {
     let mut data = Vec::new();
 
-    // ── 24 all-air sub-chunks (Y indices -4..=19) ────────────────────────────
-    // Chorus uses 2 block layers per sub-chunk.
-    for sub_y in -4i8..=19i8 {
-        data.push(9);               // format version = 9 (Limitless)
-        data.push(2);               // 2 storage layers (block + waterlog)
-        data.push(sub_y as u8);     // sub_chunk_y index
+    // First biome section: plains (biome_id = 1)
+    // ZigZag(1) = 2 → 0x02 (1 byte VarI32)
+    data.push(0x01);            // header: (0 bits << 1) | network=1
+    write_vari32(&mut data, 1); // ZigZag(1) = 0x02
 
-        // Layer 1: blocks (all air, runtime_id = 0)
-        data.push(0x01);            // header: (0 bits << 1) | 1 = 0x01
-        write_vari32(&mut data, 0); // ZigZag(0) = 0x00; no count when bits=0
-
-        // Layer 2: waterlog (all air)
-        data.push(0x01);            // header
-        write_vari32(&mut data, 0); // ZigZag(0) = 0x00
+    // Sections 2-24: "same as previous" = (0x7F << 1) | 1 = 0xFF
+    for _ in 1..24 {
+        data.push(0xFF);
     }
 
-    // ── Biomes: one PalettedStorage per sub-chunk ─────────────────────────────
-    // Written AFTER all sub-chunks, one entry per sub-chunk (24 total).
-    // Biome IDs use VarI32 (ZigZag), same as block IDs.
-    // Plains biome = 1 → ZigZag(1) = 2 = 0x02.
-    for _ in 0..24 {
-        data.push(0x01);            // header: single-value, network palette
-        write_vari32(&mut data, 1); // biome_id = 1 (plains); ZigZag(1) = 0x02
-    }
-
-    // ── Footer ───────────────────────────────────────────────────────────────
-    data.push(0); // border_block_count = 0
+    // Border block count
+    data.push(0);
 
     data
 }

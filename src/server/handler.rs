@@ -487,7 +487,7 @@ async fn maybe_update_chunks(
         };
         state.send_packets(addr, cmd_tx, &[publisher_pkg]).await?;
 
-        let chunk_payload = make_flat_chunk_payload();
+        let chunk_payload = make_limited_chunk_payload();
         let mut new_chunk_pkgs = Vec::new();
         for dx in -r..=r {
             for dz in -r..=r {
@@ -502,7 +502,8 @@ async fn maybe_update_chunks(
                 let chunk_payload_written = LevelChunk {
                     chunk_x,
                     chunk_z,
-                    sub_chunk_count: 24,
+                    sub_chunk_count: SUB_CHUNK_REQUEST_MODE_LIMITED,
+                    highest_sub_chunk: 0,
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
@@ -580,15 +581,8 @@ async fn handle_request_chunk_radius(
         };
         state.send_packets(addr, cmd_tx, &[radius_pkg]).await?;
 
-        // ── Step 2: BiomeDefinitionList ────────────────────────────────────
-        // GopherTunnel sends this right after ChunkRadiusUpdated, before PlayStatus.
-        let biome_pkg = GamePacket {
-            id: ID_BIOME_DEFINITION_LIST,
-            sender_subclient: 0,
-            recipient_subclient: 0,
-            payload: BiomeDefinitionList::empty().write()?,
-        };
-        state.send_packets(addr, cmd_tx, &[biome_pkg]).await?;
+        // NOTE: BiomeDefinitionList already sent in the pre-spawn batch with real NBT data.
+        // We do NOT send a second (empty/malformed) one here — it would confuse the client.
 
         // ── Step 3: PlayStatus(PlayerSpawn) ───────────────────────────────
         // GopherTunnel sends PlayStatus BEFORE chunks.
@@ -610,7 +604,7 @@ async fn handle_request_chunk_radius(
         state.last_chunk_x = Some(0);
         state.last_chunk_z = Some(0);
 
-        let chunk_payload = make_flat_chunk_payload();
+        let chunk_payload = make_limited_chunk_payload();
         let mut built_chunks = Vec::new();
         let r = (radius as i32).min(3);
         let mut chunk_pkgs = Vec::new();
@@ -626,7 +620,10 @@ async fn handle_request_chunk_radius(
                     payload: LevelChunk {
                         chunk_x: dx,
                         chunk_z: dz,
-                        sub_chunk_count: 24,
+                        // SubChunkRequestModeLimited: client uses SubChunkRequest for block data.
+                        // HighestSubChunk=0 means all-air; client won't request sub-chunks.
+                        sub_chunk_count: SUB_CHUNK_REQUEST_MODE_LIMITED,
+                        highest_sub_chunk: 0,
                         payload: chunk_payload.clone(),
                     }.write()?,
                 };

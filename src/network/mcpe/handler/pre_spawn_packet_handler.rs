@@ -31,7 +31,7 @@ pub async fn handle_request_chunk_radius(
         state.last_chunk_x = Some(0);
         state.last_chunk_z = Some(0);
 
-        let chunk_payload = make_flat_chunk_payload();
+        let chunk_payload = make_limited_chunk_payload();
         let mut built_chunks = Vec::new();
         let radius = (req.chunk_radius as u32).min(3);
         let r = radius as i32;
@@ -44,7 +44,8 @@ pub async fn handle_request_chunk_radius(
                 let chunk_payload_written = LevelChunk {
                     chunk_x: dx,
                     chunk_z: dz,
-                    sub_chunk_count: 24,  // Full 24 sub-chunks height
+                    sub_chunk_count: SUB_CHUNK_REQUEST_MODE_LIMITED,
+                    highest_sub_chunk: 0,
                     payload: chunk_payload.clone(),
                 }.write()?;
                 let chunk_pkg = GamePacket {
