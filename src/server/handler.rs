@@ -571,13 +571,17 @@ async fn handle_request_chunk_radius(
         state.chunk_radius = radius as u32;
         log::info!("[{}] handle_request_chunk_radius: received RequestChunkRadius, client requests radius {}", addr, radius);
 
-        // ── Step 1: ChunkRadiusUpdated ─────────────────────────────────────
-        log::info!("[{}] Sending ChunkRadiusUpdated (radius={})...", addr, radius);
+        // Cap the confirmed radius to match what we actually send.
+        // CRITICAL: if we confirm radius=12 but only send radius=3 chunks,
+        // the client waits for ~600 chunks that never arrive and disconnects.
+        let r = (radius as i32).min(8) as i16;
+        state.chunk_radius = r as u32;
+        log::info!("[{}] Sending ChunkRadiusUpdated (confirmed radius={}, capped from {})...", addr, r, radius);
         let radius_pkg = GamePacket {
             id: ID_CHUNK_RADIUS_UPDATED,
             sender_subclient: 0,
             recipient_subclient: 0,
-            payload: ChunkRadiusUpdated { radius }.write()?,
+            payload: ChunkRadiusUpdated { radius: r as i32 }.write()?,
         };
         state.send_packets(addr, cmd_tx, &[radius_pkg]).await?;
 
@@ -606,10 +610,12 @@ async fn handle_request_chunk_radius(
 
         let chunk_payload = make_limited_chunk_payload();
         let mut built_chunks = Vec::new();
-        let r = (radius as i32).min(3);
+        // Use the SAME radius we confirmed in ChunkRadiusUpdated.
+        // We must send EXACTLY (2*r+1)^2 chunks so the client doesn't wait for more.
+        let chunk_r = r as i32;  // r is the i16 confirmed radius from above
         let mut chunk_pkgs = Vec::new();
-        for dx in -r..=r {
-            for dz in -r..=r {
+        for dx in -chunk_r..=chunk_r {
+            for dz in -chunk_r..=chunk_r {
                 state.loaded_chunks.insert((dx, dz));
                 built_chunks.push(ChunkPos { x: dx, z: dz });
 
@@ -648,7 +654,7 @@ async fn handle_request_chunk_radius(
             recipient_subclient: 0,
             payload: NetworkChunkPublisherUpdate {
                 position: BlockPos { x: 0, y: 64, z: 0 },
-                radius: (r as u32) << 4,
+                radius: (chunk_r as u32) << 4,
                 server_built_chunks: built_chunks,
             }.write()?,
         };
